@@ -4,6 +4,7 @@
 #   make formal   SymbiYosys proofs
 #   make synth    pre-layout IHP SG13G2 synthesis + ABC timing (needs PDK_ROOT)
 #   make gl       gate-level cocotb on the yosys netlist (needs PDK_ROOT)
+#   make pnr      OpenROAD place/route/STA on the TT 6x4 template (needs PDK_ROOT, TT_TOOLS)
 #   make asm      assemble all firmware listings
 
 SRC = src/tt_um_protocol_engine.v src/pesm_core.v src/pesm_host.v src/pesm_fifo.v src/pesm_clkdiv.v src/pesm_sync.v
@@ -31,7 +32,10 @@ gl: synth
 	cd test && $(MAKE) clean && $(MAKE) GATES=yes PDK_ROOT=$(CURDIR)/synth/gl_models
 	python3 -m cocotb_tools.check_results test/results.xml
 
+pnr:
+	./pnr/run_pnr.sh
+
 asm:
 	@for f in firmware/*.pasm; do echo "== $$f"; python3 tools/pesm_asm.py $$f || exit 1; done
 
-.PHONY: lint test formal synth gl asm
+.PHONY: lint test formal synth gl pnr asm

@@ -34,10 +34,10 @@ cells=$(awk '/Number of cells/ {print $NF}' stat_typ.txt | tail -1)
 flops=$(grep -E "sg13g2_(s?dfrbp|dfrbpq|sdfbbp)" stat_typ.txt | awk '{s+=$2} END {print s}')
 d_typ=$(grep -E "ABC: (WireLoad|Path|.*Delay =)" synth_typ.log | grep -oE "Delay = *[0-9.]+ ps" | tail -1 | grep -oE "[0-9.]+")
 d_slow=$(grep -oE "Delay = *[0-9.]+ ps" synth_slow.log | tail -1 | grep -oE "[0-9.]+")
-tile_area=720000   # 24 tiles x ~200 um x 150 um (competition rules, approximate)
+tile_area=916214   # TT ihp-sg13g2 6x4 die: 1289.28 x 710.64 um (tt-support-tools tile_sizes.yaml)
 echo "cells (typ map)        : $cells"
 echo "flip-flops             : $flops"
 echo "std-cell area (typ)    : $area um^2"
-echo "6x4 tile area (~)      : $tile_area um^2  -> utilisation $(python3 -c "print(round(100*$area/$tile_area,1))") %"
+echo "6x4 die area           : $tile_area um^2  -> utilisation $(python3 -c "print(round(100*$area/$tile_area,1))") %"
 echo "ABC comb. delay typ    : ${d_typ} ps"
 echo "ABC comb. delay slow   : ${d_slow} ps   (budget 20000 ps at 50 MHz, minus clk->q/setup/skew)"

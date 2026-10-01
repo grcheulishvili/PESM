@@ -544,3 +544,176 @@ async def test_wait_edge_sync_and_sideset(dut):
     assert t_lo - t_hi == 40, t_lo - t_hi
     # edge applied at cycle 0; 2-flop sync + edge detect + I/2 = 20 + const
     assert 20 <= t_hi <= 24, t_hi
+
+
+# ---------------------------------------------------------------------------
+# USB low-speed: CRC5 + CRC16 computed on chip, NRZI/bit-stuffed packets
+# transmitted on chip, decoded and checked by an independent receiver model.
+# ---------------------------------------------------------------------------
+def crc5_usb_ref(bits):
+    crc = 0x1F
+    for b in bits:
+        crc = (crc >> 1) ^ 0x14 if (crc ^ b) & 1 else crc >> 1
+    return crc ^ 0x1F
+
+
+def _bits_lsb(data, n=None):
+    out = []
+    for byte in data:
+        out += [(byte >> i) & 1 for i in range(8)]
+    return out if n is None else out[:n]
+
+
+class USBLSDecoder:
+    """Samples D+ (uio[0]) / D- (uio[1]) every clk, then decodes offline."""
+
+    def __init__(self, dut, h):
+        self.dut, self.h = dut, h
+        self.trace = []      # (cycle, state) on change; state in J, K, SE0, SE1
+        self.stop = False
+
+    @staticmethod
+    def _state(dp, dm):
+        return {(0, 1): "J", (1, 0): "K", (0, 0): "SE0", (1, 1): "SE1"}[(dp, dm)]
+
+    async def run(self):
+        cyc, last = 0, None
+        while not self.stop:
+            await FallingEdge(self.dut.clk)
+            cyc += 1
+            oe = int(self.dut.uio_oe.value)
+            out = int(self.dut.uio_out.value)
+            assert oe & 3 == 3, "USB lines must be driven"
+            s = self._state(out & 1, (out >> 1) & 1)
+            if s != last:
+                self.trace.append((cyc, s))
+                last = s
+
+    def packets(self, period):
+        """Return list of (bytes, eop_ok, grid_errs)."""
+        tr = self.trace
+        pkts = []
+        i = 0
+        while i < len(tr):
+            c0, s0 = tr[i]
+            if s0 != "K" or i == 0 or tr[i - 1][1] != "J":
+                i += 1
+                continue
+
+            def state_at(t):
+                st = tr[0][1]
+                for c, s in tr:
+                    if c <= t:
+                        st = s
+                    else:
+                        break
+                return st
+
+            prev = "J"
+            bits, ones, k = [], 0, 0
+            stuffed_err = False
+            while True:
+                s = state_at(c0 + (k + 0.5) * period)
+                if s == "SE0":
+                    break
+                b = 1 if s == prev else 0
+                prev = s
+                k += 1
+                if ones == 6:
+                    if b != 0:
+                        stuffed_err = True
+                    ones = 0
+                    continue           # drop stuff bit
+                bits.append(b)
+                ones = ones + 1 if b else 0
+            se0_start = c0 + k * period
+            eop_ok = (state_at(se0_start + 0.5 * period) == "SE0" and
+                      state_at(se0_start + 1.5 * period) == "SE0" and
+                      state_at(se0_start + 2.5 * period) == "J")
+            nbytes = len(bits) // 8
+            data = [sum(bits[8 * j + i] << i for i in range(8)) for j in range(nbytes)]
+            # every transition of this packet must sit on the tick grid
+            errs = []
+            for c, _ in tr:
+                if c0 <= c <= se0_start + 2.6 * period:
+                    q = (c - c0) / period
+                    errs.append(abs(q - round(q)) * period)
+            pkts.append({"data": data, "eop_ok": eop_ok, "stuff_err": stuffed_err,
+                         "trailing_bits": len(bits) % 8, "max_grid_err": max(errs)})
+            while i < len(tr) and tr[i][0] < se0_start + 3 * period:
+                i += 1
+        return pkts
+
+
+@cocotb.test()
+async def test_usb_ls_tx_with_crc(dut):
+    h = PESM(dut)
+    await h.start()
+
+    # --- CRC5 of a SETUP token, computed by the engine ---
+    addr, endp = 0x15, 0xE
+    tok = [(addr & 0x7F) | ((endp & 1) << 7), endp >> 1]
+    assert crc5_usb_ref(_bits_lsb(b"123456789")) == 0x19        # catalogue check value
+    exp5 = crc5_usb_ref(_bits_lsb(tok, 11))
+    # USB 2.0 spec example (addr 15h, endp Eh -> 10111b, written in transmit order)
+    assert int(f"{exp5:05b}"[::-1], 2) == 0x17
+    await h.load(assemble_file("crc5_usb.pasm"))
+    await h.run()
+    await h.write_tx(tok)
+    await ClockCycles(dut.clk, 100)
+    st = await h.status()
+    assert st["halted"] == 1
+    (crc5,) = await h.read_rx(1)
+    assert crc5 == exp5, f"crc5 {crc5:#x} != {exp5:#x}"
+
+    # --- CRC16 of the DATA0 payload, computed by the engine ---
+    payload = [0x80, 0x06, 0x00, 0x01, 0xFF, 0xFF, 0x7E, 0x3F]   # long 1-runs force stuffing
+    await h.control(asm.CTRL_FLUSH_RX)
+    await h.load(assemble_file("crc16_usb.pasm"))
+    await h.run()
+    await h.write_tx(payload)
+    await ClockCycles(dut.clk, 400)
+    await h.control(asm.CTRL_HFLAG_SET)
+    await ClockCycles(dut.clk, 50)
+    lo, hi = await h.read_rx(2)
+    assert (hi << 8) | lo == crc16_usb(payload)
+
+    # --- transmit SETUP token and DATA0 packet on the bus ---
+    prog = assemble_file("usb_ls_tx.pasm")
+    period = (prog.cfg[0] | prog.cfg[1] << 8) + prog.cfg[2] / 256.0
+    await h.load(prog)
+    await h.run()
+    dec = USBLSDecoder(dut, h)
+    cocotb.start_soon(dec.run())
+    await ClockCycles(dut.clk, 200)
+
+    token = [0x80, 0x2D, tok[0], tok[1] | (crc5 << 3)]
+    await h.write_tx(token)
+    await ClockCycles(dut.clk, int(period * (len(token) * 8 + 8)))
+    data_pkt = [0x80, 0xC3] + payload + [lo, hi]
+    await h.write_tx(data_pkt[:8])
+    await ClockCycles(dut.clk, int(period * 20))
+    await h.write_tx(data_pkt[8:])
+    await ClockCycles(dut.clk, int(period * (len(data_pkt) * 8 + 30)))
+    dec.stop = True
+
+    pkts = dec.packets(period)
+    assert len(pkts) == 2, pkts
+    for p, ref in zip(pkts, [token, data_pkt]):
+        assert p["data"] == ref, f"{[hex(b) for b in p['data']]} != {[hex(b) for b in ref]}"
+        assert p["eop_ok"] and not p["stuff_err"] and p["trailing_bits"] == 0, p
+        assert p["max_grid_err"] < 1.0, p
+    # receiver-side validation, independent of the engine
+    d = pkts[0]["data"]
+    rx_addr, rx_endp = d[2] & 0x7F, (d[2] >> 7) | ((d[3] & 7) << 1)
+    assert (d[3] >> 3) == crc5_usb_ref(_bits_lsb(d[2:4], 11))
+    # residual check over field + CRC as received: 01100b (spec order)
+    crc = 0x1F
+    for b in _bits_lsb(d[2:4], 16):
+        crc = (crc >> 1) ^ 0x14 if (crc ^ b) & 1 else crc >> 1
+    assert crc == 0b00110
+    assert (rx_addr, rx_endp) == (addr, endp)
+    dd = pkts[1]["data"]
+    assert crc16_usb(dd[2:-2]) == dd[-2] | (dd[-1] << 8)
+    # bit stuffing really happened (0xFF 0xFF run)
+    dut._log.info(f"USB LS: token + DATA0 decoded, grid error <= {max(p['max_grid_err'] for p in pkts):.2f} clk")

@@ -58,21 +58,25 @@ matters for the board wiring.
 
 ## D. Remaining risks (not closed by this work)
 
-1. **Physical signoff not run.** No LibreLane/OpenROAD placement, CTS, routing
-   or STA was available in this environment. `synth/run_synth.sh` gives a
-   pre-layout estimate only (zero wire load). Run the TT `gds` workflow.
-2. **Gate-level CI.** Icarus 12 does not drive the `delayed_*` nets in the
-   current IHP SG13G2 cell models; the GL netlist simulates only with
-   `synth/make_gl_models.sh`. Check whether the TT `gl_test` action passes on
-   the pinned PDK.
+1. **Signoff is not complete.** `pnr/run_pnr.sh` runs OpenROAD (place, CTS,
+   route, OpenRCX, three-corner STA) on the real TT 6x4 template, but it is
+   not LibreLane. Magic/KLayout DRC, LVS, the TT precheck and GDS have not
+   been run. The TT `gds` workflow is the signoff.
+2. **Gate-level CI (resolved).** The TT `gl_test` action installs
+   TinyTapeout's Icarus 13 build, which drives the IHP `delayed_*` nets. The
+   unmodified cell models pass the full suite with it.
+   `synth/make_gl_models.sh` is only needed with Icarus 12.
 3. **Model independence.** The reference model and RTL share an author. One
    common-mode error (JPIN decoded as class A) was in both and only showed
    up in a directed protocol test. Directed tests check against protocol
    specifications (UART framing, SPI slave, I2C slave, CRC-16/USB check
-   value), not against the model.
+   value, CRC-5 spec vector, USB LS receiver), not against the model.
 4. **Top-level formal is bounded** (BMC depth 40). Unbounded proofs cover
    `pesm_fifo`, `pesm_clkdiv`, `pesm_host` and `pesm_core` separately.
-5. **USB LS / 10BASE-T** are not demonstrated. At 50 MHz, 12 Mb/s FS USB and
-   10BASE-T Manchester (20 Mbaud) are beyond 1 instr/clk. LS USB (1.5 Mb/s,
-   33 clk/bit) fits the cycle budget, and NRZI, bit stuffing and CRC5/16
-   primitives exist, but no firmware or test exists for it yet.
+5. **USB.** LS transmit is demonstrated: NRZI, stuffing, EOP, on-chip CRC5
+   and CRC16. An LS receiver with on-the-fly CRC does not fit the register
+   budget. 10BASE-T and FS USB exceed 1 instr/clk at 50 MHz.
+6. **Critical path.** pc → imem 32:1 mux → decode → IN shifter/autopush
+   byte select → RX FIFO write data: 46 logic levels. A first OpenROAD run
+   without a setup margin closed at only +0.76 ns in the slow corner (see
+   README for the margin-driven result).

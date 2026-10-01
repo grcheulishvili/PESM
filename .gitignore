@@ -13,3 +13,4 @@ synth/netlist_*.v
 synth/stat_*.txt
 synth/gl_models/
 runs/
+pnr/out/

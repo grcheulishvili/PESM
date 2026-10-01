@@ -1,0 +1,17 @@
+corner  path   group         worst slack (ns)
+typ     setup  asynchronous  16.035
+typ     setup  clk           8.612
+typ     hold   asynchronous  0.336
+typ     hold   clk           0.259
+slow    setup  asynchronous  14.468
+slow    setup  clk           1.647
+slow    hold   asynchronous  0.713
+slow    hold   clk           0.584
+fast    setup  asynchronous  15.942
+fast    setup  clk           12.658
+fast    hold   asynchronous  0.117
+fast    hold   clk           0.083
+detailed-route DRC markers : 0
+max slew/cap/fanout viol.  : 0
+[INFO ANT-0002] Found 3 net violations.
+Design area 150760 u^2 17% utilization.
