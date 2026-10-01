@@ -43,6 +43,9 @@ module pesm_clkdiv #(
 
     reg [IW-1:0] cnt;
     reg [FW-1:0] acc;
+    reg [IW-1:0] cnt_d;     // next counter value
+    reg [FW-1:0] acc_d;
+    reg          zero;      // registered (cnt == 0): keeps the zero-detect tree off the tick path
 
     wire [FW:0]   acc_sum  = {1'b0, acc} + {1'b0, div_frac};
     wire          int_zero = (div_int == I_ZERO);
@@ -50,28 +53,38 @@ module pesm_clkdiv #(
     wire [IW-1:0] half_int = {1'b0, div_int[IW-1:1]};
     wire [IW-1:0] half_m1  = (half_int == I_ZERO) ? I_ZERO : (half_int - I_ONE);
 
-    assign tick = en & (cnt == I_ZERO);
+    assign tick = en & zero;
+
+    always @(*) begin
+        if (!en) begin
+            cnt_d = I_ZERO;
+            acc_d = F_ZERO;
+        end else if (sync) begin
+            cnt_d = half ? half_m1 : int_m1;
+            acc_d = F_ZERO;
+        end else if (zero) begin
+            if (int_zero) begin
+                cnt_d = I_ZERO;
+                acc_d = F_ZERO;
+            end else begin
+                cnt_d = int_m1 + {{(IW-1){1'b0}}, acc_sum[FW]};
+                acc_d = acc_sum[FW-1:0];
+            end
+        end else begin
+            cnt_d = cnt - I_ONE;
+            acc_d = acc;
+        end
+    end
 
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            cnt <= I_ZERO;
-            acc <= F_ZERO;
-        end else if (!en) begin
-            cnt <= I_ZERO;
-            acc <= F_ZERO;
-        end else if (sync) begin
-            cnt <= half ? half_m1 : int_m1;
-            acc <= F_ZERO;
-        end else if (cnt == I_ZERO) begin
-            if (int_zero) begin
-                cnt <= I_ZERO;
-                acc <= F_ZERO;
-            end else begin
-                cnt <= int_m1 + {{(IW-1){1'b0}}, acc_sum[FW]};
-                acc <= acc_sum[FW-1:0];
-            end
+            cnt  <= I_ZERO;
+            acc  <= F_ZERO;
+            zero <= 1'b1;
         end else begin
-            cnt <= cnt - I_ONE;
+            cnt  <= cnt_d;
+            acc  <= acc_d;
+            zero <= (cnt_d == I_ZERO);
         end
     end
 
@@ -87,6 +100,9 @@ module pesm_clkdiv #(
             assume ($stable(div_frac));
         end
     end
+
+    // the registered zero flag always equals the zero-detect of the counter
+    always @(*) if (rst_n) assert (zero == (cnt == I_ZERO));
 
     // Counter bound
     always @(*) begin

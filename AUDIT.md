@@ -59,8 +59,9 @@ matters for the board wiring.
 ## D. Remaining risks (not closed by this work)
 
 1. **Signoff is not complete.** `pnr/run_pnr.sh` runs OpenROAD (place, CTS,
-   route, OpenRCX, three-corner STA) on the real TT 6x4 template, but it is
-   not LibreLane. Magic/KLayout DRC, LVS, the TT precheck and GDS have not
+   route, antenna repair, OpenRCX, three-corner STA) on the real TT 6x4
+   template, but it is not LibreLane: synthesis strategy, resizer settings
+   and extraction details differ, so CI numbers will differ somewhat. Magic/KLayout DRC, LVS, the TT precheck and GDS have not
    been run. The TT `gds` workflow is the signoff.
 2. **Gate-level CI (resolved).** The TT `gl_test` action installs
    TinyTapeout's Icarus 13 build, which drives the IHP `delayed_*` nets. The
@@ -76,7 +77,19 @@ matters for the board wiring.
 5. **USB.** LS transmit is demonstrated: NRZI, stuffing, EOP, on-chip CRC5
    and CRC16. An LS receiver with on-the-fly CRC does not fit the register
    budget. 10BASE-T and FS USB exceed 1 instr/clk at 50 MHz.
-6. **Critical path.** pc → imem 32:1 mux → decode → IN shifter/autopush
-   byte select → RX FIFO write data: 46 logic levels. A first OpenROAD run
-   without a setup margin closed at only +0.76 ns in the slow corner (see
-   README for the margin-driven result).
+6. **Critical path (addressed).** The first routed run closed at +0.76 ns
+   (slow corner). The path was pc → imem 32:1 mux → decode → IN
+   shifter/autopush → RX FIFO write data, 46 levels. Three structural fixes,
+   none of which change the ISA, its cycle timing or the program-visible
+   behaviour:
+   * prefetch register `instr <= imem[next_pc]`. Formally proven:
+     `instr == imem[pc]` whenever the core runs. A host-write bypass covers a
+     write in the same cycle as the BOOT-time prefetch.
+   * registered RX FIFO write port. The core's "full" counts the pending
+     write. Formal (top-level BMC) shows the registered push never meets a
+     full FIFO. Directed test `test_rx_port_back_to_back_full`; model
+     updated.
+   * registered divider zero-detect (`zero == (cnt == 0)`, proven).
+   Routed result (OpenROAD, TT 6x4 template): setup slack +4.49 ns in the
+   slow corner (was +0.76), hold +0.12 ns in the fast corner, 0 DRC markers,
+   0 antenna violations after diode repair.

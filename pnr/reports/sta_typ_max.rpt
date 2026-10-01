@@ -1,5 +1,5 @@
 Startpoint: rst_n (input port clocked by clk)
-Endpoint: _13016_ (recovery check against rising-edge clock clk)
+Endpoint: _14168_ (recovery check against rising-edge clock clk)
 Path Group: asynchronous
 Path Type: max
 Corner: typ
@@ -9,26 +9,26 @@ Fanout      Cap     Slew    Delay     Time   Description
                             0.000    0.000   clock clk (rise edge)
                             0.000    0.000   clock network delay (propagated)
                             4.000    4.000 ^ input external delay
-     2    0.015    0.031    0.013    4.013 ^ rst_n (in)
-                   0.031    0.000    4.013 ^ _13016_/RESET_B (sg13g2_dfrbpq_1)
-                                     4.013   data arrival time
+     2    0.052    0.066    0.046    4.046 ^ rst_n (in)
+                   0.067    0.000    4.046 ^ _14168_/RESET_B (sg13g2_dfrbpq_1)
+                                     4.046   data arrival time
 
                            20.000   20.000   clock clk (rise edge)
-                            0.420   20.420   clock network delay (propagated)
-                           -0.250   20.170   clock uncertainty
-                            0.000   20.170   clock reconvergence pessimism
-                                    20.170 ^ _13016_/CLK (sg13g2_dfrbpq_1)
-                           -0.122   20.048   library recovery time
-                                    20.048   data required time
+                            0.421   20.421   clock network delay (propagated)
+                           -0.250   20.171   clock uncertainty
+                            0.000   20.171   clock reconvergence pessimism
+                                    20.171 ^ _14168_/CLK (sg13g2_dfrbpq_1)
+                           -0.133   20.038   library recovery time
+                                    20.038   data required time
 ---------------------------------------------------------------------------------
-                                    20.048   data required time
-                                    -4.013   data arrival time
+                                    20.038   data required time
+                                    -4.046   data arrival time
 ---------------------------------------------------------------------------------
-                                    16.035   slack (MET)
+                                    15.992   slack (MET)
 
 
-Startpoint: _12982_ (rising edge-triggered flip-flop clocked by clk)
-Endpoint: _12740_ (rising edge-triggered flip-flop clocked by clk)
+Startpoint: _14121_ (rising edge-triggered flip-flop clocked by clk)
+Endpoint: _14012_ (rising edge-triggered flip-flop clocked by clk)
 Path Group: clk
 Path Type: max
 Corner: typ
@@ -36,66 +36,60 @@ Corner: typ
 Fanout      Cap     Slew    Delay     Time   Description
 ---------------------------------------------------------------------------------
                             0.000    0.000   clock clk (rise edge)
-                            0.486    0.486   clock network delay (propagated)
-                   0.036    0.000    0.486 ^ _12982_/CLK (sg13g2_dfrbpq_1)
-     8    0.043    0.180    0.297    0.784 ^ _12982_/Q (sg13g2_dfrbpq_1)
-     6    0.030    0.129    0.204    0.988 ^ place3275/X (sg13g2_buf_1)
-     8    0.048    0.206    0.240    1.228 ^ _06559_/Y (sg13g2_nand2b_1)
-     8    0.056    0.204    0.260    1.487 v _06570_/Y (sg13g2_nor3_1)
-     8    0.072    0.229    0.297    1.784 v place2852/X (sg13g2_buf_1)
-     1    0.022    0.239    0.287    2.071 ^ _06611_/Y (sg13g2_a22oi_1)
-     1    0.012    0.177    0.247    2.318 v _06613_/Y (sg13g2_nand4_1)
-     1    0.017    0.340    0.373    2.691 ^ _06628_/Y (sg13g2_nor4_1)
-     4    0.045    0.307    0.383    3.074 v _06630_/Y (sg13g2_nand2_1)
-     2    0.008    0.127    0.169    3.243 ^ _06631_/Y (sg13g2_nor2_1)
-     5    0.025    0.099    0.140    3.383 v _06632_/Y (sg13g2_inv_1)
-     6    0.026    0.231    0.233    3.616 ^ _06680_/Y (sg13g2_nor2_1)
-     2    0.038    0.158    0.237    3.854 ^ _06681_/X (sg13g2_or2_1)
-     8    0.043    0.178    0.232    4.086 ^ place2433/X (sg13g2_buf_1)
-     2    0.012    0.151    0.153    4.239 ^ _06765_/Y (sg13g2_nand3b_1)
-     2    0.013    0.106    0.140    4.379 v _06767_/Y (sg13g2_o21ai_1)
-     1    0.007    0.124    0.157    4.537 ^ _06794_/Y (sg13g2_nor3_1)
-     2    0.016    0.293    0.252    4.789 v _06795_/Y (sg13g2_nand4_1)
-     3    0.038    0.357    0.381    5.170 ^ _06799_/Y (sg13g2_a21oi_1)
-     7    0.067    0.277    0.344    5.514 ^ place2397/X (sg13g2_buf_1)
-     2    0.010    0.098    0.157    5.670 v _07531_/Y (sg13g2_nand2_1)
-     2    0.016    0.323    0.334    6.004 ^ _07674_/Y (sg13g2_nor4_1)
-     7    0.056    0.357    0.404    6.408 v _07759_/Y (sg13g2_o21ai_1)
-     5    0.028    0.126    0.312    6.720 ^ _07762_/X (sg13g2_mux2_1)
-     7    0.058    0.239    0.265    6.985 ^ place2312/X (sg13g2_buf_1)
-     2    0.009    0.056    0.246    7.231 v _07993_/X (sg13g2_mux2_1)
-     2    0.010    0.058    0.218    7.449 v _08061_/X (sg13g2_mux4_1)
-     1    0.012    0.211    0.176    7.625 ^ _08063_/Y (sg13g2_nor3_1)
-     7    0.066    0.273    0.307    7.932 ^ place2276/X (sg13g2_buf_1)
-     4    0.033    0.198    0.240    8.172 v _08072_/Y (sg13g2_nor2_1)
-     4    0.018    0.091    0.310    8.482 v _08090_/X (sg13g2_mux4_1)
-     1    0.005    0.041    0.148    8.631 v _08123_/X (sg13g2_mux2_1)
-     1    0.004    0.046    0.199    8.829 v _08124_/X (sg13g2_mux4_1)
-     2    0.024    0.083    0.138    8.967 v _08125_/X (sg13g2_and2_1)
-     5    0.060    0.602    0.520    9.487 ^ _08127_/Y (sg13g2_o21ai_1)
-     4    0.021    0.110    0.404    9.891 ^ _08457_/X (sg13g2_mux4_1)
-     1    0.005    0.049    0.062    9.954 v _08576_/Y (sg13g2_nor2_1)
-     3    0.029    0.309    0.280   10.234 ^ _08577_/Y (sg13g2_o21ai_1)
-     2    0.014    0.073    0.222   10.456 ^ _08582_/X (sg13g2_mux2_1)
-     3    0.019    0.159    0.170   10.625 v _08601_/Y (sg13g2_a221oi_1)
-     2    0.011    0.145    0.192   10.818 ^ _08607_/Y (sg13g2_o21ai_1)
-     1    0.005    0.040    0.155   10.973 ^ _08613_/X (sg13g2_a21o_1)
-     8    0.051    0.302    0.272   11.245 v _08614_/Y (sg13g2_a21oi_1)
-     1    0.003    0.050    0.208   11.453 v _08615_/X (sg13g2_mux2_1)
-                   0.050    0.000   11.453 v _12740_/D (sg13g2_dfrbpq_1)
-                                    11.453   data arrival time
+                            0.472    0.472   clock network delay (propagated)
+                   0.034    0.000    0.472 ^ _14121_/CLK (sg13g2_dfrbpq_1)
+     4    0.036    0.152    0.274    0.746 ^ _14121_/Q (sg13g2_dfrbpq_1)
+     2    0.008    0.076    0.139    0.885 v _07065_/Y (sg13g2_xnor2_1)
+     7    0.088    0.867    0.705    1.590 ^ _07068_/Y (sg13g2_o21ai_1)
+     1    0.004    0.122    0.147    1.736 v _07073_/Y (sg13g2_nor2_1)
+     2    0.013    0.164    0.192    1.929 ^ _07075_/Y (sg13g2_o21ai_1)
+     2    0.016    0.130    0.177    2.106 v _07076_/Y (sg13g2_a21oi_1)
+     3    0.017    0.197    0.230    2.336 ^ _07078_/Y (sg13g2_o21ai_1)
+     3    0.016    0.078    0.205    2.540 ^ _07080_/X (sg13g2_a21o_1)
+     3    0.012    0.118    0.138    2.678 v _07093_/Y (sg13g2_a221oi_1)
+     3    0.018    0.179    0.230    2.908 v _07104_/Y (sg13g2_nand3b_1)
+     1    0.006    0.105    0.152    3.060 ^ _07107_/Y (sg13g2_a22oi_1)
+     1    0.005    0.053    0.086    3.146 v _07108_/Y (sg13g2_o21ai_1)
+     1    0.006    0.097    0.099    3.245 ^ _07109_/Y (sg13g2_a22oi_1)
+     1    0.006    0.058    0.091    3.337 v _07110_/Y (sg13g2_o21ai_1)
+     1    0.010    0.122    0.125    3.462 ^ _07111_/Y (sg13g2_a22oi_1)
+     5    0.025    0.163    0.194    3.656 v _07112_/Y (sg13g2_o21ai_1)
+     3    0.030    0.415    0.389    4.045 ^ _08287_/Y (sg13g2_nor3_1)
+     4    0.036    0.349    0.358    4.403 v _08290_/Y (sg13g2_o21ai_1)
+     5    0.030    0.179    0.283    4.686 v _08538_/Y (sg13g2_nand2b_1)
+     2    0.009    0.065    0.208    4.894 ^ _08542_/X (sg13g2_mux2_1)
+     8    0.073    0.298    0.282    5.176 ^ place2574/X (sg13g2_buf_1)
+     2    0.010    0.059    0.211    5.387 ^ _08609_/X (sg13g2_mux2_1)
+     2    0.010    0.081    0.062    5.449 v _08610_/Y (sg13g2_nor2_1)
+     6    0.060    1.020    0.848    6.297 ^ _08614_/Y (sg13g2_nor4_1)
+     5    0.044    0.205    0.369    6.665 ^ _08635_/Y (sg13g2_nand3b_1)
+     3    0.015    0.117    0.173    6.838 v _08637_/Y (sg13g2_o21ai_1)
+     1    0.014    0.078    0.259    7.097 v _08665_/X (sg13g2_mux4_1)
+     2    0.010    0.061    0.242    7.339 v _08734_/X (sg13g2_mux4_1)
+     3    0.031    0.450    0.398    7.736 ^ _08736_/Y (sg13g2_a221oi_1)
+     3    0.016    0.143    0.206    7.942 v _08739_/Y (sg13g2_nor2_1)
+     4    0.026    0.116    0.309    8.251 v _09064_/X (sg13g2_mux4_1)
+     3    0.030    0.111    0.239    8.490 v _09174_/X (sg13g2_mux2_1)
+     2    0.010    0.076    0.106    8.596 ^ _09179_/Y (sg13g2_nand3_1)
+     3    0.052    0.309    0.293    8.889 v _10308_/Y (sg13g2_a21oi_1)
+     1    0.006    0.048    0.246    9.135 v _10313_/X (sg13g2_or3_1)
+     1    0.007    0.088    0.104    9.239 ^ _10314_/Y (sg13g2_a21oi_1)
+     1    0.003    0.044    0.084    9.323 v _10317_/Y (sg13g2_o21ai_1)
+     1    0.003    0.036    0.398    9.720 v hold3701/X (sg13g2_dlygate4sd3_1)
+                   0.036    0.000    9.720 v _14012_/D (sg13g2_dfrbpq_1)
+                                     9.720   data arrival time
 
                            20.000   20.000   clock clk (rise edge)
-                            0.419   20.419   clock network delay (propagated)
-                           -0.250   20.169   clock uncertainty
-                            0.017   20.186   clock reconvergence pessimism
-                                    20.186 ^ _12740_/CLK (sg13g2_dfrbpq_1)
-                           -0.121   20.065   library setup time
-                                    20.065   data required time
+                            0.420   20.420   clock network delay (propagated)
+                           -0.250   20.170   clock uncertainty
+                            0.016   20.185   clock reconvergence pessimism
+                                    20.185 ^ _14012_/CLK (sg13g2_dfrbpq_1)
+                           -0.115   20.070   library setup time
+                                    20.070   data required time
 ---------------------------------------------------------------------------------
-                                    20.065   data required time
-                                   -11.453   data arrival time
+                                    20.070   data required time
+                                    -9.720   data arrival time
 ---------------------------------------------------------------------------------
-                                     8.612   slack (MET)
+                                    10.350   slack (MET)
 
 

@@ -40,8 +40,9 @@ TOPLEVEL = tb
 
 # List test modules to run, separated by commas and without the .py suffix:
 #   test      - directed, black-box (runs on RTL and on the gate-level netlist)
-#   test_crv  - constrained-random lockstep against pesm_model.py (black-box)
-COCOTB_TEST_MODULES ?= test,test_crv
+#   test_crv  - constrained-random lockstep against sw/pesm/model.py (black-box)
+#   test_toolchain - programmer.py over SPI + DSL macros vs device models (black-box)
+COCOTB_TEST_MODULES ?= test,test_crv,test_toolchain
 
 # include cocotb's make rules to take care of the simulator setup
 include $(shell cocotb-config --makefiles)/Makefile.sim

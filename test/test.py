@@ -717,3 +717,66 @@ async def test_usb_ls_tx_with_crc(dut):
     assert crc16_usb(dd[2:-2]) == dd[-2] | (dd[-1] << 8)
     # bit stuffing really happened (0xFF 0xFF run)
     dut._log.info(f"USB LS: token + DATA0 decoded, grid error <= {max(p['max_grid_err'] for p in pkts):.2f} clk")
+
+
+@cocotb.test()
+async def test_rx_port_back_to_back_full(dut):
+    """Registered RX write port: back-to-back autopushes must stop at exactly 8
+    entries (the pending write counts as occupied), and one host pop must let
+    exactly one more push through."""
+    h = PESM(dut)
+    await h.start()
+    prog = asm.assemble("""
+    .autopush 8
+    .shift in=left
+        ldi x, 0xa5
+    """ + "\n".join(["    in x, 8"] * 12) + "\n    halt\n")
+    await h.load(prog)
+    await h.control(asm.CTRL_FLUSH_RX | asm.CTRL_CLR_FLAGS)
+    await h.run()
+    await ClockCycles(dut.clk, 40)
+    st = await h.status()
+    assert st["rx_level"] == 8 and st["rx_ovf"] == 0, st
+    assert st["pc"] == 9 and st["running"] == 1, st          # 9th IN (addr 9) stalled
+    assert await h.read_rx(1) == [0xA5]
+    await ClockCycles(dut.clk, 10)
+    st = await h.status()
+    assert st["rx_level"] == 8 and st["pc"] == 10, st        # exactly one more push
+
+
+@cocotb.test()
+async def test_pinmap_isolation(dut):
+    """Host traffic lives only on ui_in[3:0] / uo_out[0]: during heavy SPI
+    traffic (BOOT and RUN) no uio pad and no TOUT pin moves, and toggling the
+    target inputs ui_in[7:4] / uio never disturbs the host port."""
+    h = PESM(dut)
+    await h.start()
+    seen = {"bad": []}
+
+    async def watch(n):
+        for _ in range(n):
+            await FallingEdge(dut.clk)
+            oe, out, tout = int(dut.uio_oe.value), int(dut.uio_out.value), h.tout()
+            if oe != 0 or tout != 0:
+                seen["bad"].append((oe, out, tout))
+
+    w = cocotb.start_soon(watch(60000))
+    rng = random.Random(3)
+    await h.boot()
+    for _ in range(3):
+        h.set_ext(rng.randrange(256))
+        h.set_tin(rng.randrange(16))
+        words = [rng.randrange(1 << 16) for _ in range(32)]
+        await h.write_imem(0, words)
+        assert await h.read_imem(0, 32) == words
+    # RUN a program that never touches pins, keep hammering the host port
+    await h.load(asm.assemble("l:\n pull\n out x, 8\n mov isr, x\n push\n jmp l\n"))
+    await h.run()
+    for i in range(4):
+        h.set_tin(rng.randrange(16))
+        h.set_ext(rng.randrange(256))
+        await h.write_tx([i, i + 1])
+        await ClockCycles(dut.clk, 20)
+        assert await h.read_rx(2) == [i, i + 1]
+    w.kill()
+    assert not seen["bad"], seen["bad"][:5]

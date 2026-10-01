@@ -89,7 +89,7 @@ estimate_parasitics -placement
 banner REPAIR_TIMING_CTS
 # ask for 3 ns of setup margin at the worst corner, not just >= 0
 repair_timing -setup -setup_margin 3.0 -max_utilization 40
-repair_timing -hold -hold_margin 0.1
+repair_timing -hold -hold_margin 0.15
 detailed_placement
 check_placement -verbose
 estimate_parasitics -placement
@@ -100,9 +100,12 @@ banner GLOBAL_ROUTE
 set_global_routing_layer_adjustment Metal2-TopMetal1 0.0
 global_route -allow_congestion -congestion_report_file $out/grt_congestion.rpt
 estimate_parasitics -global_routing
+repair_design
 repair_timing -setup -setup_margin 2.0 -max_utilization 40
-repair_timing -hold -hold_margin 0.05
-repair_antennas
+repair_timing -hold -hold_margin 0.12
+repair_design
+# antenna: diodes (sg13g2_antennanp), 20 % ratio margin, as LibreLane
+repair_antennas sg13g2_antennanp -iterations 5 -ratio_margin 20
 detailed_placement
 global_route -allow_congestion
 estimate_parasitics -global_routing
@@ -112,6 +115,14 @@ report_worst_slack -min
 banner DETAILED_ROUTE
 set_thread_count 2
 detailed_route -output_drc $out/drt_drc.rpt -droute_end_iter 64 -verbose 0
+# post-route antenna repair loop (as ORFS detail_route.tcl): insert diodes on
+# nets still violating, then incrementally re-route
+for {set i 0} {$i < 5} {incr i} {
+    if {![check_antennas]} { break }
+    banner "ANTENNA_REPAIR_POST_DRT $i"
+    repair_antennas sg13g2_antennanp -iterations 1 -ratio_margin 10
+    detailed_route -output_drc $out/drt_drc.rpt -droute_end_iter 64 -verbose 0
+}
 check_antennas -report_file $out/antenna.rpt
 
 banner FILL

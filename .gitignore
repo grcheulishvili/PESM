@@ -14,3 +14,5 @@ synth/stat_*.txt
 synth/gl_models/
 runs/
 pnr/out/
+sw/*.egg-info/
+.pytest_cache/

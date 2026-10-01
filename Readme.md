@@ -6,6 +6,7 @@ protocols run as firmware. The chip has no hard protocol blocks and no
 general-purpose ALU.
 
 * ISA, timing model and host protocol: [`docs/ISA.md`](docs/ISA.md)
+* Python DSL, assembler, host programmer, pipeline: [`docs/DSL_GUIDE.md`](docs/DSL_GUIDE.md)
 * Review of v1 and what changed: [`AUDIT.md`](AUDIT.md)
 
 ## Pin map
@@ -40,7 +41,21 @@ general-purpose ALU.
 | FIFO | `src/pesm_fifo.v` |
 | synchronizer | `src/pesm_sync.v` |
 
-## Firmware examples (`firmware/`)
+## Software (`sw/pesm`)
+
+| Tool | |
+|---|---|
+| `pesm.builder.PESMProgram` | Python DSL: chainable instructions plus UART/SPI/I2C/CRC/USB-LS macros, compiled straight to an image |
+| `python -m pesm.assembler` | `.pasm` → listing / `.bin` (80 B: imem + cfg) / `.mem` ($readmemh) / Python lists / JSON |
+| `python -m pesm.programmer` | flash + readback-verify over FT232H (pyftdi) or Raspberry Pi spidev |
+| `python -m pesm.run_pipeline` | DSL `.py`, `.pasm`, `.bin` or `.json` → flash → run → TX/RX/status; `--backend emulator` needs no hardware |
+
+```
+pip install -e sw && pytest sw/tests
+python -m pesm.run_pipeline sw/examples/crc16_usb.py --backend ftdi --tx 123456789 --hflag --wait-halt --rx 2
+```
+
+## Firmware examples (`firmware/`, DSL equivalents in `sw/examples/`)
 
 | File | Words | Demonstrates |
 |---|---|---|
@@ -64,16 +79,18 @@ Everything below was run on this exact source tree.
 | What | How | Result |
 |---|---|---|
 | Lint | `make lint` (Verilator 5.020 `-Wall`) | clean |
-| Directed tests, RTL | `test/test.py`, 13 tests, black-box via the real SPI loader: loader random access and readback, write protection, FIFO and flags, illegal opcode, fractional divider (exact 256-period sums), setup-at-clk regression, UART TX (every edge within 1 clk of the grid), UART RX (±2 % baud, framing error), SPI master against a mode-0 slave model, I2C against a slave with clock stretching and NACK, CRC-16/USB check value 0xB4C8, edge-WAIT re-phasing + side-set, USB LS: on-chip CRC5 (spec vector) and CRC16, then SETUP token + DATA0 packet transmitted and decoded by an independent NRZI/de-stuff/EOP/CRC receiver (all transitions within 0.71 clk of the 1.5 MHz grid) | 13/13 pass |
-| Constrained random, RTL | `test/test_crv.py`: random config + program + TX preload, pins compared every cycle against `test/pesm_model.py`, FIFOs and flags compared at the end | 40 × 1500 cycles (default) and 300 × 2000 cycles (seed 7, 471 692 instructions): pass |
-| Mutation check | `test/mutate.sh`: 5 injected core bugs | all 5 caught (4 by CRV, `!osre` off-by-one only by the SPI/CRC directed tests) |
-| Formal, unbounded | `make formal`: `pesm_fifo` (PDR; incl. data-ordering proof), `pesm_clkdiv` (k-induction at full 16.8 width: period ∈ {I, I+1}, exact SYNC/half phase), `pesm_host` (imem/cfg immutable while running), `pesm_core` (k-induction: FIFO handshake safety, pre-delayed instructions execute only on ticks, stall ⇒ pc frozen, HALT freezes pins, edge-WAIT needs an edge, autopush only at threshold, side-set isolation) | pass |
-| Formal, bounded | top-level cross-block FIFO handshakes, open drain never drives 1 (BMC 40) | pass |
-| Gate level | yosys netlist (SG13G2) + unmodified IHP cell models, full directed suite + CRV, Icarus 13 (the version the TT `gl_test` action installs) | pass |
-| Area (pre-layout) | `synth/run_synth.sh`, SG13G2 typ | 7 830 cells, 1 050 flops, 121 900 µm² = 13.3 % of the 1289.28 × 710.64 µm 6×4 die |
-| Timing (pre-layout) | ABC `stime`, zero wire load | 6.0 ns typ / 9.4 ns slow. **Underestimates by ~2×**: the routed slow-corner critical path is 18.7 ns (see below) |
-| Place & route + STA | `pnr/run_pnr.sh`: OpenROAD (pip `openroad` bindings) on the TT 6×4 IHP DEF template: PDN, timing-driven placement, CTS, setup/hold repair, global + detailed route, OpenRCX extraction, typ/slow/fast STA with 5 % derate, 0.25 ns uncertainty, 4 ns I/O delays (`pnr/reports/`) | worst setup slack: +8.61 ns typ, **+1.65 ns slow** (1.08 V/125 °C), +12.66 ns fast; worst hold slack: +0.26/+0.58/**+0.08 ns**; 0 detailed-route DRC markers; 0 slew/cap/fanout violations; 3 antenna nets left (LibreLane diode insertion normally fixes these); placed area 150 760 µm² (17 %) after 1 215 hold buffers |
-| Post-route gate level | `pnr` netlist, all 14 tests incl. CRV, Icarus 13 | pass |
+| Toolchain unit tests | `pytest sw/tests` (56): all 65 536 words × 5 side-set counts round-trip through disassembler and assembler; every DSL example is bit-identical to its `firmware/*.pasm`; `to_asm` round-trip; output formats; programmer verify/retry, FIFO flow control and CRC pipeline on the emulator; FTDI and spidev transports against fake drivers; every DSL code block in the guide compiles | pass |
+| Toolchain on the design | `test/test_toolchain.py`: `programmer.py`/`run_pipeline` over the real SPI port via a cocotb transport; DSL UART-byte (exact 50-clk bits), SPI-transfer (slave model) and I2C-read (slave model, NACK) macros | 4/4 pass |
+| Directed tests, RTL | `test/test.py`, 15 tests, black-box via the real SPI loader: loader random access and readback, write protection, FIFO and flags, illegal opcode, fractional divider (exact 256-period sums), setup-at-clk regression, UART TX (every edge within 1 clk of the grid), UART RX (±2 % baud, framing error), SPI master against a mode-0 slave model, I2C against a slave with clock stretching and NACK, CRC-16/USB check value 0xB4C8, edge-WAIT re-phasing + side-set, USB LS: on-chip CRC5 (spec vector) and CRC16, then SETUP token + DATA0 packet transmitted and decoded by an independent NRZI/de-stuff/EOP/CRC receiver (all transitions within 0.71 clk of the 1.5 MHz grid), back-to-back autopush into a full RX FIFO through the registered write port, pin-map isolation (host traffic never moves a uio/TOUT pin) | 15/15 pass |
+| Constrained random, RTL | `test/test_crv.py`: random config + program + TX preload, pins compared every cycle against `sw/pesm/model.py`, FIFOs and flags compared at the end | 40 × 1500 cycles (default) and 300 × 2000 cycles (seed 7, 459 792 instructions): pass |
+| Mutation check | `test/mutate.sh`: 6 injected core bugs | all caught (`!osre` off-by-one and RX pending-full only by directed tests, the rest also by CRV) |
+| Formal, unbounded | `make formal`: `pesm_fifo` (PDR; incl. data-ordering proof), `pesm_clkdiv` (k-induction at full 16.8 width: period ∈ {I, I+1}, exact SYNC/half phase), `pesm_host` (imem/cfg immutable while running), `pesm_core` (k-induction: prefetch consistency `instr == imem[pc]`, FIFO handshake safety, pre-delayed instructions execute only on ticks, stall ⇒ pc frozen, HALT freezes pins, edge-WAIT needs an edge, autopush only at threshold, side-set isolation) | pass |
+| Formal, bounded | top-level cross-block FIFO handshakes incl. the registered RX write never hitting a full FIFO, open drain never drives 1 (BMC 40) | pass |
+| Gate level | yosys netlist (SG13G2) + unmodified IHP cell models, Icarus 13 (the version the TT `gl_test` action installs) | pass |
+| Area (pre-layout) | `synth/run_synth.sh`, SG13G2 typ | 8 483 cells, 1 076 flops, 122 955 µm² = 13.4 % of the 1289.28 × 710.64 µm 6×4 die |
+| Timing (pre-layout) | ABC `stime`, zero wire load | 5.4 ns typ / 8.4 ns slow. Optimistic: no wires, fanout or derate; use the routed STA below |
+| Place & route + STA | `pnr/run_pnr.sh`: OpenROAD (pip `openroad` bindings) on the TT 6×4 IHP DEF template: PDN, timing-driven placement, CTS, setup/hold repair (3 ns / 0.15 ns targets), global + detailed route, diode antenna repair with post-route ECO loop, OpenRCX extraction, typ/slow/fast STA with 5 % derate, 0.25 ns uncertainty, 4 ns I/O delays (`pnr/reports/`) | worst setup slack +10.35 typ / **+4.49 slow** (1.08 V/125 °C) / +13.75 fast ns; worst hold slack +0.33 / +0.68 / **+0.12** ns; **0** detailed-route DRC markers; **0** antenna violations; 0 slew/cap violations (one max-fanout entry = 6 logic loads + 4 antenna diodes); 153 912 µm² placed (17 %) |
+| Post-route gate level | routed netlist, all 20 cocotb tests incl. CRV and toolchain, Icarus 13 | pass |
 | DRC (KLayout/Magic), LVS, TT precheck, GDS | TT `gds` workflow | **not run here** (no KLayout/Magic/Netgen; GitHub container registry blocked) |
 
 ## Running
@@ -90,10 +107,6 @@ CRV_ITERS=300 CRV_CYCLES=2000 CRV_SEED=7 make -C test COCOTB_TEST_MODULES=test_c
 
 ## Known limits
 
-* Slow-corner setup margin is only +1.65 ns. The critical path is
-  `pc → imem 32:1 mux → decode → IN shifter / autopush byte select → RX FIFO
-  write data` (46 logic levels). Registering the FIFO write port would cut
-  it, but it delays `rxnf`/`txne` by one cycle and needs a model update.
 
 * 32 instructions. Area use is about 13 %, so 64 words (one more PC bit,
   wider jump field) fits if the ISA is re-encoded.

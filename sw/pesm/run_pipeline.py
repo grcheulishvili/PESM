@@ -1,0 +1,127 @@
+# Copyright (c) 2026 PESM contributors
+# SPDX-License-Identifier: Apache-2.0
+"""
+Unified PESM pipeline: source -> image -> flash -> run -> exchange data.
+
+Source may be:
+  * a PESMProgram instance (Python DSL) or an Image,
+  * a .pasm/.asm text file,
+  * a .py file defining `program` (PESMProgram) or `build()` returning one,
+  * a .bin (80-byte image) or .json image.
+
+    python -m pesm.run_pipeline firmware/uart_tx.pasm --backend ftdi --tx "hello\\n"
+    python -m pesm.run_pipeline sw/examples/crc16_usb.py --backend emulator \\
+        --tx-hex "31 32 33" --hflag --wait-halt --rx 2
+
+API:
+    from pesm.run_pipeline import run_pipeline
+    res = run_pipeline(program, transport, tx=b"\\x55", rx=1)
+    print(res.status, res.rx)
+"""
+
+from __future__ import annotations
+
+import argparse
+import importlib.util
+import os
+import sys
+from dataclasses import dataclass, field
+from typing import List, Optional, Sequence, Union
+
+from . import isa
+from .builder import PESMProgram
+from .programmer import (Programmer, Transport, add_transport_args, load_image,
+                         transport_from_args)
+from .hostproto import Status
+
+Source = Union[str, PESMProgram, isa.Image]
+
+
+@dataclass
+class PipelineResult:
+    image: isa.Image
+    status: Status
+    rx: List[int] = field(default_factory=list)
+
+
+def compile_source(source: Source) -> isa.Image:
+    if isinstance(source, isa.Image):
+        return source
+    if isinstance(source, PESMProgram):
+        return source.compile()
+    path = str(source)
+    if path.endswith(".py"):
+        spec = importlib.util.spec_from_file_location(
+            os.path.splitext(os.path.basename(path))[0], path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        prog = getattr(mod, "program", None)
+        if prog is None and hasattr(mod, "build"):
+            prog = mod.build()
+        if not isinstance(prog, (PESMProgram, isa.Image)):
+            raise SystemExit(f"{path}: define `program` or `build()` returning a PESMProgram")
+        return compile_source(prog)
+    return load_image(path)
+
+
+def run_pipeline(source: Source, transport: Transport, tx: Sequence[int] = b"",
+                 rx: Optional[int] = None, hflag: bool = False, wait_halt: bool = False,
+                 run_time: float = 0.0, timeout: float = 1.0, verify: bool = True,
+                 log=None) -> PipelineResult:
+    """Compile, load (verified), start, feed TX, optionally set the host flag,
+    wait, and collect RX bytes. rx=None reads whatever is queued at the end."""
+    img = compile_source(source)
+    p = Programmer(transport, log=log)
+    p.load(img, verify=verify)
+    p.run()
+    if tx:
+        p.write_tx(list(tx), timeout=timeout)
+    if run_time:
+        transport.delay(run_time)
+    if hflag:
+        p.set_hflag(True)
+    if wait_halt:
+        p.wait_halt(timeout=timeout)
+    data = p.read_rx(rx, timeout=timeout) if rx != 0 else []
+    return PipelineResult(image=img, status=p.status(), rx=data)
+
+
+def _parse_tx(a) -> bytes:
+    if a.tx_hex:
+        return bytes(int(x, 16) for x in a.tx_hex.replace(",", " ").split())
+    if a.tx:
+        return a.tx.encode().decode("unicode_escape").encode("latin-1")
+    return b""
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__,
+                                 formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("source")
+    ap.add_argument("--tx", help="text to send to the TX FIFO (escapes allowed)")
+    ap.add_argument("--tx-hex", help="hex bytes to send, e.g. '55 aa 01'")
+    ap.add_argument("--rx", type=int, default=None,
+                    help="number of RX bytes to wait for (default: read what is queued)")
+    ap.add_argument("--hflag", action="store_true", help="set the host flag after TX")
+    ap.add_argument("--wait-halt", action="store_true")
+    ap.add_argument("--run-time", type=float, default=0.0, help="seconds to let it run")
+    ap.add_argument("--timeout", type=float, default=1.0)
+    ap.add_argument("--no-verify", action="store_true")
+    ap.add_argument("--listing", action="store_true", help="print the compiled listing")
+    add_transport_args(ap)
+    a = ap.parse_args(argv)
+    img = compile_source(a.source)
+    if a.listing:
+        print(img.listing())
+    with transport_from_args(a) as t:
+        res = run_pipeline(img, t, tx=_parse_tx(a), rx=a.rx, hflag=a.hflag,
+                           wait_halt=a.wait_halt, run_time=a.run_time, timeout=a.timeout,
+                           verify=not a.no_verify, log=print)
+    print(f"status: {res.status}")
+    if res.rx:
+        print("rx: " + " ".join(f"{b:02x}" for b in res.rx))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

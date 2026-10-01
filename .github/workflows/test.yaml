@@ -23,6 +23,12 @@ jobs:
         shell: bash
         run: pip install -r test/requirements.txt
 
+      - name: Toolchain unit tests
+        run: |
+          pip install pytest
+          pip install -e sw
+          pytest -q sw/tests
+
       - name: Run tests
         run: |
           cd test

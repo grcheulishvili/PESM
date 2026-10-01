@@ -13,10 +13,18 @@ from cocotb.clock import Clock
 from cocotb.triggers import ClockCycles, FallingEdge, ReadOnly, RisingEdge
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-sys.path.insert(0, os.path.join(HERE, "..", "tools"))
+sys.path.insert(0, os.path.join(HERE, "..", "sw"))
 sys.path.insert(0, HERE)
 
-import pesm_asm as asm  # noqa: E402
+from types import SimpleNamespace  # noqa: E402
+
+from pesm import assembler as _assembler  # noqa: E402
+from pesm import hostproto as _hp  # noqa: E402
+from pesm import isa as _isa  # noqa: E402
+
+# one namespace for the tests: encoders, assembler, host frames
+asm = SimpleNamespace(**{k: v for m in (_isa, _hp, _assembler) for k, v in vars(m).items()
+                         if not k.startswith("_")})
 
 CLK_NS = 20  # 50 MHz
 FW_DIR = os.path.join(HERE, "..", "firmware")
@@ -24,9 +32,8 @@ FW_DIR = os.path.join(HERE, "..", "firmware")
 UI_SCK, UI_MOSI, UI_CSN, UI_MODE = 0, 1, 2, 3
 
 
-def assemble_file(name: str) -> asm.Program:
-    with open(os.path.join(FW_DIR, name)) as f:
-        return asm.assemble(f.read())
+def assemble_file(name: str):
+    return _assembler.assemble_file(os.path.join(FW_DIR, name))
 
 
 class PESM:
@@ -137,7 +144,7 @@ class PESM:
     async def control(self, bits: int):
         await self.xfer([asm.CMD_CONTROL | (bits & 0x1F)])
 
-    async def load(self, prog: asm.Program):
+    async def load(self, prog):
         await self.boot()
         await self.write_cfg(0, prog.cfg)
         await self.write_imem(0, prog.words)

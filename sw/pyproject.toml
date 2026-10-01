@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pesm"
+version = "2.0.0"
+description = "PESM v2 protocol-engine toolchain: ISA, assembler, Python DSL, SPI host programmer"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.9"
+
+[project.optional-dependencies]
+ftdi = ["pyftdi>=0.55"]
+spidev = ["spidev>=3.6", "gpiod>=2.0"]
+test = ["pytest"]
+
+[project.scripts]
+pesm-asm = "pesm.assembler:main"
+pesm-prog = "pesm.programmer:main"
+pesm-run = "pesm.run_pipeline:main"
+
+[tool.setuptools]
+packages = ["pesm"]

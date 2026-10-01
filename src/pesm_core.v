@@ -27,8 +27,9 @@ module pesm_core (
     input  wire        rst_n,
     input  wire        boot,
 
-    output wire [4:0]  pc_o,
-    input  wire [15:0] instr,
+    output wire [4:0]  pc_o,         // architectural pc (status)
+    output wire [4:0]  fetch_pc,     // imem read address = next pc
+    input  wire [15:0] fetch_instr,  // imem[fetch_pc]
 
     input  wire [7:0]  bio_in,
     input  wire [3:0]  tin,
@@ -56,7 +57,8 @@ module pesm_core (
     input  wire [7:0]  tx_head,
     output reg         tx_pop,
     input  wire        rx_full,
-    output reg         rx_push,
+    input  wire [3:0]  rx_level,
+    output reg         rx_push,      // registered write port
     output reg  [7:0]  rx_wdata,
 
     input  wire        hflag,
@@ -104,6 +106,7 @@ module pesm_core (
     reg        dl_active;
     reg [15:0] dl_cnt;
     reg [15:0] in_prev;
+    reg [15:0] instr;       // prefetched imem[pc]
 
     assign pc_o = pc;
 
@@ -137,7 +140,11 @@ module pesm_core (
     //   14    host flag
     //   15    0
     // ------------------------------------------------------------------
-    wire [15:0] in_vec = {1'b0, hflag, ~rx_full, ~tx_empty, tin, bio_in};
+    // The RX write port is registered: a push issued in cycle t lands in the
+    // FIFO at the end of t+1. The core's notion of "full" counts that pending
+    // write, so it can never overfill the FIFO.
+    wire        rx_full_c = rx_full | (rx_push & (rx_level == 4'd7));
+    wire [15:0] in_vec = {1'b0, hflag, ~rx_full_c, ~tx_empty, tin, bio_in};
 
     // ------------------------------------------------------------------
     // Helpers
@@ -237,6 +244,8 @@ module pesm_core (
     wire [7:0] osr_byte = cfg_out_right ? osr[7:0]   : osr[31:24];
 
     wire [4:0] seq_pc = (pc == cfg_wrap_top) ? cfg_wrap_bot : (pc + 5'd1);
+    wire [4:0] pc_next;
+    assign fetch_pc = pc_next;
 
     // ------------------------------------------------------------------
     // Execute (combinational next-state)
@@ -249,6 +258,8 @@ module pesm_core (
     reg [7:0]  oe_n;
     reg        stall;
     reg        taken;
+    reg        rx_push_c;
+    reg [7:0]  rx_wdata_c;
     reg [4:0]  tgt;
     reg        set_halt, set_irq, set_err, set_rxovf;
     reg        dl_active_n;
@@ -292,8 +303,8 @@ module pesm_core (
         taken       = 1'b0;
         tgt         = 5'd0;
         tx_pop      = 1'b0;
-        rx_push     = 1'b0;
-        rx_wdata    = 8'd0;
+        rx_push_c   = 1'b0;
+        rx_wdata_c  = 8'd0;
         div_sync    = 1'b0;
         div_half    = 1'b0;
         set_halt    = 1'b0;
@@ -343,7 +354,7 @@ module pesm_core (
                         4'h2: set_irq = 1'b1;              // IRQ
                         4'h3: begin                       // PUSH [iffull] [block]
                             if (!instr[5] || (isr_cnt >= push_th)) begin
-                                if (rx_full) begin
+                                if (rx_full_c) begin
                                     if (instr[4]) stall = 1'b1;
                                     else begin
                                         set_rxovf = 1'b1;
@@ -351,8 +362,8 @@ module pesm_core (
                                         isr_cnt_n = 6'd0;
                                     end
                                 end else begin
-                                    rx_push   = 1'b1;
-                                    rx_wdata  = isr_byte;
+                                    rx_push_c = 1'b1;
+                                    rx_wdata_c = isr_byte;
                                     isr_n     = 32'd0;
                                     isr_cnt_n = 6'd0;
                                 end
@@ -451,10 +462,10 @@ module pesm_core (
                         sh = (n6 == 6'd32) ? dm : ((isr << n6) | dm);
                     cnt_new = sat32(isr_cnt, n6);
                     if (cfg_autopush && (cnt_new >= push_th)) begin
-                        if (rx_full) stall = 1'b1;
+                        if (rx_full_c) stall = 1'b1;
                         else begin
-                            rx_push   = 1'b1;
-                            rx_wdata  = cfg_in_right ? sh[31:24] : sh[7:0];
+                            rx_push_c = 1'b1;
+                            rx_wdata_c = cfg_in_right ? sh[31:24] : sh[7:0];
                             isr_n     = 32'd0;
                             isr_cnt_n = 6'd0;
                             lb_n      = dm[0];
@@ -631,6 +642,9 @@ module pesm_core (
         end
     end
 
+    assign pc_next = boot ? cfg_entry :
+                     (exec & ~stall) ? (taken ? tgt : seq_pc) : pc;
+
     // ------------------------------------------------------------------
     // State update
     // ------------------------------------------------------------------
@@ -650,6 +664,9 @@ module pesm_core (
             dl_active <= 1'b0;
             dl_cnt    <= 16'd0;
             in_prev   <= 16'd0;
+            instr     <= 16'h0100;
+            rx_push   <= 1'b0;
+            rx_wdata  <= 8'd0;
             out_reg   <= 15'd0;
             oe_reg    <= 8'd0;
             halted    <= 1'b0;
@@ -657,7 +674,11 @@ module pesm_core (
             err       <= 1'b0;
             rx_ovf    <= 1'b0;
         end else begin
-            in_prev <= in_vec;
+            in_prev  <= in_vec;
+            instr    <= fetch_instr;
+            pc       <= pc_next;
+            rx_push  <= rx_push_c;
+            rx_wdata <= rx_wdata_c;
 
             if (clr_flags) begin
                 irq    <= 1'b0;
@@ -666,7 +687,6 @@ module pesm_core (
             end
 
             if (boot) begin
-                pc        <= cfg_entry;
                 x         <= 8'd0;
                 y         <= 8'd0;
                 osr       <= 32'd0;
@@ -698,7 +718,6 @@ module pesm_core (
                     dl_active <= dl_active_n;
                     dl_cnt    <= dl_cnt_n;
                 end else begin
-                    pc        <= taken ? tgt : seq_pc;
                     pd_done   <= 1'b0;
                     dl_active <= 1'b0;
                 end
@@ -737,18 +756,23 @@ module pesm_core (
             assume ($stable(cfg_wrap_bot));
             assume ($stable(cfg_crc_poly));
         end
-        // imem is write-protected while running: same pc -> same instruction
-        if (f_past_valid && !boot && !$past(boot) && pc == $past(pc))
-            assume ($stable(instr));
     end
+
+    // imem content (write-protected while running) modelled as a constant
+    (* anyconst *) reg [511:0] f_imem;
+    always @(*) assume (fetch_instr == f_imem[{fetch_pc, 4'd0} +: 16]);
+    // prefetch consistency: the executing instruction is always imem[pc]
+    // (the chip's MODE synchronizer resets to BOOT, so the first cycle after reset is boot)
+    always @(posedge clk) if (f_past_valid && !$past(rst_n)) assume (boot);
+    always @(*) if (rst_n && f_past_valid && !boot) assert (instr == f_imem[{pc, 4'd0} +: 16]);
 
     // ---- FIFO handshake safety ----
     always @(*) begin
         if (rst_n) begin
-            assert (!(rx_push && rx_full));
+            assert (!(rx_push_c && rx_full_c));
             assert (!(tx_pop && tx_empty));
             if (!run) begin
-                assert (!rx_push);
+                assert (!rx_push_c);
                 assert (!tx_pop);
             end
         end
@@ -805,7 +829,7 @@ module pesm_core (
 
     // ---- autopush pushes exactly at threshold ----
     always @(*) begin
-        if (rst_n && exec && op == OP_IN && rx_push)
+        if (rst_n && exec && op == OP_IN && rx_push_c)
             assert (cfg_autopush && (sat32(isr_cnt, n6) >= push_th));
     end
 

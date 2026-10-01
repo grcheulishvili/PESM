@@ -65,6 +65,7 @@ module tt_um_protocol_engine (
     // Interconnect
     // ------------------------------------------------------------------
     wire [4:0]  pc;
+    wire [4:0]  fetch_pc;
     wire [15:0] instr;
 
     wire [15:0] cfg_div_int;
@@ -111,7 +112,7 @@ module tt_um_protocol_engine (
         .clk(clk), .rst_n(rstn_i),
         .sck(sck_s), .mosi(mosi_s), .csn(csn_s), .miso(miso),
         .boot(boot),
-        .core_pc(pc), .core_instr(instr),
+        .core_pc(pc), .fetch_pc(fetch_pc), .core_instr(instr),
         .cfg_div_int(cfg_div_int), .cfg_div_frac(cfg_div_frac),
         .cfg_out_right(cfg_out_right), .cfg_in_right(cfg_in_right),
         .cfg_autopull(cfg_autopull), .cfg_autopush(cfg_autopush),
@@ -147,7 +148,7 @@ module tt_um_protocol_engine (
 
     pesm_core u_core (
         .clk(clk), .rst_n(rstn_i), .boot(boot),
-        .pc_o(pc), .instr(instr),
+        .pc_o(pc), .fetch_pc(fetch_pc), .fetch_instr(instr),
         .bio_in(bio_s), .tin(tin_s),
         .cfg_div_int(cfg_div_int), .cfg_div_frac(cfg_div_frac),
         .cfg_out_right(cfg_out_right), .cfg_in_right(cfg_in_right),
@@ -160,7 +161,7 @@ module tt_um_protocol_engine (
         .cfg_init_bio_out(cfg_init_bio_out), .cfg_init_bio_oe(cfg_init_bio_oe),
         .cfg_init_tout(cfg_init_tout),
         .tx_empty(tx_empty), .tx_head(tx_head), .tx_pop(tx_pop),
-        .rx_full(rx_full), .rx_push(rx_push), .rx_wdata(rx_wdata),
+        .rx_full(rx_full), .rx_level(rx_level), .rx_push(rx_push), .rx_wdata(rx_wdata),
         .hflag(hflag), .hflag_clr(hflag_clr_core), .clr_flags(clr_flags),
         .out_reg(out_reg), .oe_reg(oe_reg),
         .running(st_running), .halted(st_halted), .irq(st_irq), .err(st_err),

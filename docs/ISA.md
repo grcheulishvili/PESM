@@ -32,6 +32,12 @@ This is the normative reference. `src/pesm_core.v`, `src/pesm_host.v`,
 * **Inputs** pass through 2-flop synchronizers: a pad change is visible to the
   core 2–3 clk later. All timing statements are relative to the synchronized
   value.
+* **RX FIFO write port is registered**: a byte pushed in cycle t is in the
+  FIFO (host-visible) at the end of cycle t+1. The core's view of "RX full"
+  (`PUSH`/autopush stalls, input pin `rxnf`) counts that pending write, so
+  back-to-back pushes stop at exactly 8 entries. The instruction fetch is a
+  prefetch register (`instr <= imem[next_pc]`). It changes no visible
+  timing: still one instruction per clock, no branch delay.
 * **BOOT** (`MODE = 1`): the core is held in reset, `pc = ENTRY`, X/Y/ISR/OSR
   cleared, OSR marked empty, pins forced to `INIT_*` config values, divider
   phase reset. `imem`/config are writable only in BOOT. The first cycle after

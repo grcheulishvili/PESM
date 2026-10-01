@@ -17,6 +17,7 @@ declare -a NAME=(
   "toggle reads side-set-modified value"
   "dlyt ignores tick on first cycle"
   "autopull threshold > instead of >="
+  "RX full ignores the pending registered write"
 )
 declare -a SED=(
   "s/3'd6: cond = (osr_cnt < pull_th);/3'd6: cond = (osr_cnt <= pull_th);/"
@@ -24,6 +25,7 @@ declare -a SED=(
   "s/2'd2: if (pin != 4'd15) out_n\[pin\] = ~out_reg\[pin\];/2'd2: if (pin != 4'd15) out_n[pin] = ~out_n[pin];/"
   "s/if (!(tick \&\& (n16 == 16'd1))) begin/if (!(n16 == 16'd1)) begin/"
   "s/if (cfg_autopull \&\& (osr_cnt >= pull_th)) begin/if (cfg_autopull \&\& (osr_cnt > pull_th)) begin/"
+  "s/wire        rx_full_c = rx_full | (rx_push \& (rx_level == 4'd7));/wire        rx_full_c = rx_full;/"
 )
 escaped=0
 for i in "${!NAME[@]}"; do

@@ -22,8 +22,8 @@ from collections import Counter
 import cocotb
 from cocotb.triggers import ClockCycles, FallingEdge, ReadOnly, RisingEdge
 
-from pesm_model import PESMModel
-from pesm_tb import PESM, asm
+from pesm_tb import PESM, asm  # sets sys.path for the pesm package
+from pesm.model import PESMModel  # noqa: E402
 
 ITERS = int(os.environ.get("CRV_ITERS", "40"))
 CYCLES = int(os.environ.get("CRV_CYCLES", "1500"))
@@ -192,5 +192,6 @@ async def test_crv_lockstep(dut):
     if ITERS < 30:
         return
     for must in ["txpop.op0", "txpop.op5", "rxpush.op0", "rxpush.op4", "stall.op3", "stall.op9",
-                 "sync.full", "sync.half", "predelay", "sideset.4", "taken.op2", "taken.op7"]:
+                 "sync.full", "sync.half", "predelay", "sideset.4", "taken.op2", "taken.op7",
+                 "stall.rxfull"]:
         assert cov[must] > 0, f"coverage hole: {must}"

@@ -1,9 +1,9 @@
 # pre-layout synthesis report (yosys 0.33 + ABC, IHP-Open-PDK sg13g2_stdcell)
-cells (typ map)        : 7830
-flip-flops             : 1050
-std-cell area (typ)    : 121865.121000 um^2
-6x4 die area           : 916214 um^2  -> utilisation 13.3 %
-ABC comb. delay typ    : 5999.15 ps
-ABC comb. delay slow   : 9410.94 ps   (budget 20000 ps at 50 MHz, minus clk->q/setup/skew)
+cells (typ map)        : 8483
+flip-flops             : 1076
+std-cell area (typ)    : 122954.857200 um^2
+6x4 die area           : 916214 um^2  -> utilisation 13.4 %
+ABC comb. delay typ    : 5365.11 ps
+ABC comb. delay slow   : 8396.58 ps   (budget 20000 ps at 50 MHz, minus clk->q/setup/skew)
 
-NOTE: ABC stime has no wire load; the routed slow-corner critical path is ~2x longer (pnr/reports/sta_slow_max.rpt).
+NOTE: ABC stime has no wire load, fanout or derating; see pnr/reports for routed STA.

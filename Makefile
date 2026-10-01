@@ -1,6 +1,7 @@
 # Top-level convenience targets.
 #   make lint     Verilator -Wall
-#   make test     cocotb directed + constrained-random (RTL)
+#   make test     cocotb directed + constrained-random + toolchain (RTL)
+#   make sw-test  pytest of the Python toolchain (no simulator)
 #   make formal   SymbiYosys proofs
 #   make synth    pre-layout IHP SG13G2 synthesis + ABC timing (needs PDK_ROOT)
 #   make gl       gate-level cocotb on the yosys netlist (needs PDK_ROOT)
@@ -15,6 +16,9 @@ lint:
 test:
 	cd test && $(MAKE) clean && $(MAKE)
 	python3 -m cocotb_tools.check_results test/results.xml
+
+sw-test:
+	cd sw && python3 -m pytest -q tests
 
 formal:
 	cd formal && $(MAKE)
@@ -38,4 +42,4 @@ pnr:
 asm:
 	@for f in firmware/*.pasm; do echo "== $$f"; python3 tools/pesm_asm.py $$f || exit 1; done
 
-.PHONY: lint test formal synth gl pnr asm
+.PHONY: lint test sw-test formal synth gl pnr asm

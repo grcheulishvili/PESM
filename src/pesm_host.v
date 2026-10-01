@@ -38,8 +38,9 @@ module pesm_host (
 
     input  wire        boot,
 
-    input  wire [4:0]  core_pc,
-    output wire [15:0] core_instr,
+    input  wire [4:0]  core_pc,      // architectural pc (status only)
+    input  wire [4:0]  fetch_pc,     // core prefetch address
+    output wire [15:0] core_instr,   // imem[fetch_pc], with write bypass
 
     output wire [15:0] cfg_div_int,
     output wire [7:0]  cfg_div_frac,
@@ -92,7 +93,12 @@ module pesm_host (
     localparam [15:0] INSTR_HALT = 16'h0100;
 
     reg [15:0] imem [0:31];
-    assign core_instr = imem[core_pc];
+    wire        imem_we;
+    wire [4:0]  imem_wa;
+    wire [15:0] imem_wd;
+    // bypass: a write landing in the same cycle as the core's (BOOT-time)
+    // prefetch of that address must be seen by the prefetch register
+    assign core_instr = (imem_we && imem_wa == fetch_pc) ? imem_wd : imem[fetch_pc];
 
     // ------------------------------------------------------------------
     // Configuration registers
@@ -180,6 +186,9 @@ module pesm_host (
     wire       sck_fall  = ~sck & sck_q;
     wire [7:0] rx_byte   = {rx_sr, mosi};
     wire       byte_done = sck_rise & (bitcnt == 3'd7);
+    assign imem_we = ~csn & byte_done & have_cmd & (cmd_op == 3'b000) & phase & boot;
+    assign imem_wa = addr;
+    assign imem_wd = {hold, rx_byte};
 
     // Byte presented on MISO for the next data byte
     reg  [7:0] tx_byte;
@@ -303,8 +312,8 @@ module pesm_host (
                                     hold  <= rx_byte;
                                     phase <= 1'b1;
                                 end else begin
-                                    if (boot) imem[addr] <= {hold, rx_byte};
-                                    else      wr_err     <= 1'b1;
+                                    if (imem_we) imem[imem_wa] <= imem_wd;
+                                    else         wr_err        <= 1'b1;
                                     addr  <= addr + 5'd1;
                                     phase <= 1'b0;
                                 end
