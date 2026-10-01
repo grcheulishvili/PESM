@@ -1,0 +1,15 @@
+test/sim_build/
+test/results.xml
+test/tb.fst
+test/tb.vcd
+test/__pycache__/
+test/gate_level_netlist.v
+tools/__pycache__/
+formal/*_prove/
+formal/*_bmc/
+formal/*_cover/
+synth/*.log
+synth/netlist_*.v
+synth/stat_*.txt
+synth/gl_models/
+runs/

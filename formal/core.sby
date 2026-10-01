@@ -1,0 +1,26 @@
+[tasks]
+prove
+bmc
+cover
+
+[options]
+prove: mode prove
+prove: depth 6
+bmc: mode bmc
+bmc: depth 24
+bmc: aigsmt z3
+cover: mode cover
+cover: depth 30
+
+[engines]
+prove: smtbmc z3
+bmc: abc bmc3
+cover: smtbmc z3
+
+[script]
+read -formal pesm_clkdiv.v pesm_core.v
+prep -top pesm_core
+
+[files]
+../src/pesm_clkdiv.v
+../src/pesm_core.v

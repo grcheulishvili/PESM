@@ -1,37 +1,55 @@
+# Tiny Tapeout project information
 project:
-  title: "Protocol Engine State Machine"
-  author: "***"
-  discord: ""
-  description: "Reprogrammable protocol emulator with fractional clock divider, autopull/autopush, 5-bit jumps, and 8-pin WAIT. Targets UART, SPI, I2C."
-  language: "Verilog"
-  clock_hz: 50000000
+  title:        "PESM: Protocol Engine State Machine"
+  author:       "PESM contributors"
+  discord:      ""
+  description:  "Microcoded, cycle-exact protocol emulator (UART/SPI/I2C/... in firmware) with SPI host port"
+  language:     "Verilog"
+  clock_hz:     50000000
+
+  # Jane Street protocol-emulator competition allocation
   tiles: "6x4"
-  top_module: "tt_um_protocol_engine"
+
+  top_module:  "tt_um_protocol_engine"
+
   source_files:
     - "tt_um_protocol_engine.v"
-  pinout:
-    ui[0]: ""
-    ui[1]: ""
-    ui[2]: ""
-    ui[3]: ""
-    ui[4]: ""
-    ui[5]: ""
-    ui[6]: ""
-    ui[7]: ""
-    uo[0]: "PIN0"
-    uo[1]: "PIN1"
-    uo[2]: "PIN2"
-    uo[3]: "PIN3"
-    uo[4]: "PIN4"
-    uo[5]: "PIN5"
-    uo[6]: "PIN6"
-    uo[7]: "PIN7"
-    uio[0]: "HOST_DATA"
-    uio[1]: "HOST_CLK"
-    uio[2]: "HOST_MODE"
-    uio[3]: "HOST_EN"
-    uio[4]: "IO0"
-    uio[5]: "IO1"
-    uio[6]: "IO2"
-    uio[7]: "IO3"
+    - "pesm_core.v"
+    - "pesm_host.v"
+    - "pesm_fifo.v"
+    - "pesm_clkdiv.v"
+    - "pesm_sync.v"
+
+pinout:
+  # Inputs
+  ui[0]: "HOST_SCK"
+  ui[1]: "HOST_MOSI"
+  ui[2]: "HOST_CS_N"
+  ui[3]: "MODE (1=BOOT 0=RUN)"
+  ui[4]: "TIN0"
+  ui[5]: "TIN1"
+  ui[6]: "TIN2"
+  ui[7]: "TIN3"
+
+  # Outputs
+  uo[0]: "HOST_MISO"
+  uo[1]: "TOUT0"
+  uo[2]: "TOUT1"
+  uo[3]: "TOUT2"
+  uo[4]: "TOUT3"
+  uo[5]: "TOUT4"
+  uo[6]: "TOUT5"
+  uo[7]: "TOUT6"
+
+  # Bidirectional pins
+  uio[0]: "BIO0"
+  uio[1]: "BIO1"
+  uio[2]: "BIO2"
+  uio[3]: "BIO3"
+  uio[4]: "BIO4"
+  uio[5]: "BIO5"
+  uio[6]: "BIO6"
+  uio[7]: "BIO7"
+
+# Do not change!
 yaml_version: 6

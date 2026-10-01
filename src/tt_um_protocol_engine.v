@@ -1,9 +1,19 @@
 /*
- * Copyright (c) 2026 Your Name
+ * Copyright (c) 2026 PESM contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * Protocol Engine State Machine (PESM)
- * Tiny Tapeout CMOS5L - Jane Street Protocol Emulator ASIC Competition
+ * Protocol Engine State Machine (PESM) v2 - Tiny Tapeout IHP CMOS5L top.
+ *
+ * Pin map
+ *   ui_in[0]   HOST_SCK     host SPI clock (mode 0)
+ *   ui_in[1]   HOST_MOSI    host SPI data in
+ *   ui_in[2]   HOST_CS_N    host SPI chip select, active low
+ *   ui_in[3]   MODE         1 = BOOT (core held, imem/cfg writable), 0 = RUN
+ *   ui_in[7:4] TIN[3:0]     target inputs  -> core input pins 8..11
+ *   uo_out[0]  HOST_MISO    host SPI data out
+ *   uo_out[7:1] TOUT[6:0]   target outputs -> core output pins 8..14
+ *   uio[7:0]   BIO[7:0]     target bidirectional -> core pins 0..7
+ *                           per-pin output enable, optional open-drain
  */
 
 `default_nettype none
@@ -19,487 +29,175 @@ module tt_um_protocol_engine (
     input  wire       rst_n
 );
 
-    reg [15:0] imem [0:31];
-
-    reg [15:0] cfg_clkdiv_int;
-    reg [7:0]  cfg_clkdiv_frac;
-    reg [4:0]  cfg_wrap_top;
-    reg [4:0]  cfg_wrap_bottom;
-    reg [1:0]  cfg_shift_dir;
-    reg        cfg_autopull;
-    reg        cfg_autopush;
-    reg [4:0]  cfg_pull_thresh;
-    reg [4:0]  cfg_push_thresh;
-    reg [3:0]  cfg_side_count;
-
-    reg [15:0] clkdiv_int_cnt;
-    reg [7:0]  clkdiv_frac_acc;
-    reg        tick;
-
+    // ------------------------------------------------------------------
+    // Reset: asynchronous assert, synchronous de-assert
+    // ------------------------------------------------------------------
+    reg [1:0] rst_pipe;
     always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            clkdiv_int_cnt  <= 16'd0;
-            clkdiv_frac_acc <= 8'd0;
-            tick            <= 1'b0;
-        end else begin
-            if (clkdiv_int_cnt == 16'd0) begin
-                if (clkdiv_frac_acc >= 8'd255) begin
-                    clkdiv_frac_acc <= 8'd0;
-                    clkdiv_int_cnt  <= cfg_clkdiv_int;
-                    tick            <= 1'b1;
-                end else begin
-                    clkdiv_frac_acc <= clkdiv_frac_acc + cfg_clkdiv_frac;
-                    clkdiv_int_cnt  <= cfg_clkdiv_int;
-                    tick            <= 1'b1;
-                end
-            end else begin
-                clkdiv_int_cnt <= clkdiv_int_cnt - 1'b1;
-                tick           <= 1'b0;
-            end
-        end
+        if (!rst_n) rst_pipe <= 2'b00;
+        else        rst_pipe <= {rst_pipe[0], 1'b1};
+    end
+    wire rstn_i = rst_pipe[1];
+
+    // ------------------------------------------------------------------
+    // Input synchronizers
+    // ------------------------------------------------------------------
+    wire [3:0] host_s;     // {mode, csn, mosi, sck}
+    wire [3:0] tin_s;
+    wire [7:0] bio_s;
+
+    pesm_sync #(.W(4), .RESET_VAL(4'b1100)) u_sync_host (
+        .clk(clk), .rst_n(rstn_i), .d(ui_in[3:0]), .q(host_s)
+    );
+    pesm_sync #(.W(4), .RESET_VAL(4'b0000)) u_sync_tin (
+        .clk(clk), .rst_n(rstn_i), .d(ui_in[7:4]), .q(tin_s)
+    );
+    pesm_sync #(.W(8), .RESET_VAL(8'h00)) u_sync_bio (
+        .clk(clk), .rst_n(rstn_i), .d(uio_in), .q(bio_s)
+    );
+
+    wire sck_s  = host_s[0];
+    wire mosi_s = host_s[1];
+    wire csn_s  = host_s[2];
+    wire boot   = host_s[3];
+
+    // ------------------------------------------------------------------
+    // Interconnect
+    // ------------------------------------------------------------------
+    wire [4:0]  pc;
+    wire [15:0] instr;
+
+    wire [15:0] cfg_div_int;
+    wire [7:0]  cfg_div_frac;
+    wire        cfg_out_right, cfg_in_right, cfg_autopull, cfg_autopush;
+    wire [4:0]  cfg_pull_thresh, cfg_push_thresh;
+    wire [2:0]  cfg_side_count;
+    wire        cfg_side_pindir;
+    wire [3:0]  cfg_side_base;
+    wire [4:0]  cfg_wrap_top, cfg_wrap_bot, cfg_entry;
+    wire [7:0]  cfg_od_mask;
+    wire [15:0] cfg_crc_poly;
+    wire [7:0]  cfg_init_bio_out, cfg_init_bio_oe;
+    wire [6:0]  cfg_init_tout;
+
+    wire        tx_push, tx_pop, tx_empty, tx_full;
+    wire [7:0]  tx_wdata, tx_head;
+    wire [3:0]  tx_level;
+    wire        rx_push, rx_pop, rx_empty, rx_full;
+    wire [7:0]  rx_wdata, rx_head;
+    wire [3:0]  rx_level;
+
+    wire        flush_tx, flush_rx, hflag_set, hflag_clr_host, hflag_clr_core, clr_flags;
+    wire        st_running, st_halted, st_irq, st_err, st_rx_ovf;
+    wire [7:0]  st_x, st_y;
+    wire [14:0] out_reg;
+    wire [7:0]  oe_reg;
+    wire        miso;
+
+    // ------------------------------------------------------------------
+    // Host flag (host -> core semaphore, input pin 14)
+    // ------------------------------------------------------------------
+    reg hflag;
+    always @(posedge clk or negedge rstn_i) begin
+        if (!rstn_i)                          hflag <= 1'b0;
+        else if (hflag_set)                   hflag <= 1'b1;
+        else if (hflag_clr_host | hflag_clr_core) hflag <= 1'b0;
     end
 
-    reg [4:0]  pc;
-    reg [15:0] instr;
-    reg [31:0] osr;
-    reg [31:0] isr;
-    reg [4:0]  osr_count;
-    reg [4:0]  isr_count;
-    reg [7:0]  x_reg;
-    reg [7:0]  y_reg;
-    reg [7:0]  pin_out;
-    reg [7:0]  pin_oe;
-    reg [15:0] delay_cnt;
-    reg [1:0]  state;
-    reg [1:0]  next_state;
-    reg        irq_pending;
-    reg [7:0]  host_fifo_data;
-    reg [7:0]  uio_in_prev;
-    reg [7:0]  wait_rise_pending;
-    reg [7:0]  wait_fall_pending;
+    // ------------------------------------------------------------------
+    // Blocks
+    // ------------------------------------------------------------------
+    pesm_host u_host (
+        .clk(clk), .rst_n(rstn_i),
+        .sck(sck_s), .mosi(mosi_s), .csn(csn_s), .miso(miso),
+        .boot(boot),
+        .core_pc(pc), .core_instr(instr),
+        .cfg_div_int(cfg_div_int), .cfg_div_frac(cfg_div_frac),
+        .cfg_out_right(cfg_out_right), .cfg_in_right(cfg_in_right),
+        .cfg_autopull(cfg_autopull), .cfg_autopush(cfg_autopush),
+        .cfg_pull_thresh(cfg_pull_thresh), .cfg_push_thresh(cfg_push_thresh),
+        .cfg_side_count(cfg_side_count), .cfg_side_pindir(cfg_side_pindir),
+        .cfg_side_base(cfg_side_base),
+        .cfg_wrap_top(cfg_wrap_top), .cfg_wrap_bot(cfg_wrap_bot), .cfg_entry(cfg_entry),
+        .cfg_od_mask(cfg_od_mask), .cfg_crc_poly(cfg_crc_poly),
+        .cfg_init_bio_out(cfg_init_bio_out), .cfg_init_bio_oe(cfg_init_bio_oe),
+        .cfg_init_tout(cfg_init_tout),
+        .tx_push(tx_push), .tx_wdata(tx_wdata), .tx_full(tx_full), .tx_level(tx_level),
+        .rx_pop(rx_pop), .rx_empty(rx_empty), .rx_head(rx_head), .rx_level(rx_level),
+        .flush_tx(flush_tx), .flush_rx(flush_rx),
+        .hflag_set(hflag_set), .hflag_clr(hflag_clr_host), .clr_flags(clr_flags),
+        .st_running(st_running), .st_halted(st_halted), .st_irq(st_irq),
+        .st_err(st_err), .st_rx_ovf(st_rx_ovf), .st_hflag(hflag),
+        .st_x(st_x), .st_y(st_y)
+    );
 
-    reg [3:0] side_mask;
+    pesm_fifo u_txf (
+        .clk(clk), .rst_n(rstn_i), .flush(flush_tx),
+        .push(tx_push), .wdata(tx_wdata),
+        .pop(tx_pop), .rdata(tx_head),
+        .empty(tx_empty), .full(tx_full), .level(tx_level)
+    );
+
+    pesm_fifo u_rxf (
+        .clk(clk), .rst_n(rstn_i), .flush(flush_rx),
+        .push(rx_push), .wdata(rx_wdata),
+        .pop(rx_pop), .rdata(rx_head),
+        .empty(rx_empty), .full(rx_full), .level(rx_level)
+    );
+
+    pesm_core u_core (
+        .clk(clk), .rst_n(rstn_i), .boot(boot),
+        .pc_o(pc), .instr(instr),
+        .bio_in(bio_s), .tin(tin_s),
+        .cfg_div_int(cfg_div_int), .cfg_div_frac(cfg_div_frac),
+        .cfg_out_right(cfg_out_right), .cfg_in_right(cfg_in_right),
+        .cfg_autopull(cfg_autopull), .cfg_autopush(cfg_autopush),
+        .cfg_pull_thresh(cfg_pull_thresh), .cfg_push_thresh(cfg_push_thresh),
+        .cfg_side_count(cfg_side_count), .cfg_side_pindir(cfg_side_pindir),
+        .cfg_side_base(cfg_side_base),
+        .cfg_wrap_top(cfg_wrap_top), .cfg_wrap_bot(cfg_wrap_bot), .cfg_entry(cfg_entry),
+        .cfg_crc_poly(cfg_crc_poly),
+        .cfg_init_bio_out(cfg_init_bio_out), .cfg_init_bio_oe(cfg_init_bio_oe),
+        .cfg_init_tout(cfg_init_tout),
+        .tx_empty(tx_empty), .tx_head(tx_head), .tx_pop(tx_pop),
+        .rx_full(rx_full), .rx_push(rx_push), .rx_wdata(rx_wdata),
+        .hflag(hflag), .hflag_clr(hflag_clr_core), .clr_flags(clr_flags),
+        .out_reg(out_reg), .oe_reg(oe_reg),
+        .running(st_running), .halted(st_halted), .irq(st_irq), .err(st_err),
+        .rx_ovf(st_rx_ovf), .x(st_x), .y(st_y)
+    );
+
+    // ------------------------------------------------------------------
+    // Pads
+    //   open-drain BIO pin: never drives 1; drives 0 when out=0 and oe=1
+    // ------------------------------------------------------------------
+    assign uo_out  = {out_reg[14:8], miso};
+    assign uio_out = out_reg[7:0] & ~cfg_od_mask;
+    assign uio_oe  = oe_reg & ~(cfg_od_mask & out_reg[7:0]);
+
+    wire _unused = &{ena, 1'b0};
+
+`ifdef FORMAL
+    reg f_past_valid = 1'b0;
+    always @(posedge clk) f_past_valid <= 1'b1;
+    always @(*) if (!f_past_valid) assume (!rst_n);
+    always @(*) if (f_past_valid) assume (rst_n);
+
+    // FIFO handshakes across blocks
     always @(*) begin
-        case (cfg_side_count)
-            4'd0: side_mask = 4'b0000;
-            4'd1: side_mask = 4'b0001;
-            4'd2: side_mask = 4'b0011;
-            4'd3: side_mask = 4'b0111;
-            default: side_mask = 4'b1111;
-        endcase
-    end
-
-    localparam S_FETCH = 2'd0;
-    localparam S_EXEC  = 2'd1;
-    localparam S_DELAY = 2'd2;
-
-    reg [7:0] tx_fifo [0:7];
-    reg [7:0] rx_fifo [0:7];
-    reg [3:0] tx_wr, tx_rd, tx_count;
-    reg [3:0] rx_wr, rx_rd, rx_count;
-    wire tx_empty = (tx_count == 4'd0);
-    wire rx_full  = (rx_count == 4'd8);
-    wire host_fifo_mode = (~uio_in[3]) & uio_in[2];
-    wire host_write_req = host_fifo_mode & uio_in[0];
-    wire host_read_req  = host_fifo_mode & uio_in[1];
-    wire rx_dequeue = host_read_req && (rx_count != 4'd0);
-
-    // Autopull: only when the current instruction is OUT (consuming OSR)
-    // Autopush: only when the current instruction is IN (filling ISR)
-    // These gates prevent autopull/autopush from firing during idle/HALT cycles.
-    wire autopull_hit = cfg_autopull && (osr_count <= cfg_pull_thresh) && !tx_empty
-                        && (instr[15:12] == 4'h4);   // OP_OUT
-    wire autopush_hit = cfg_autopush && (isr_count >= cfg_push_thresh) &&
-                        (!rx_full || rx_dequeue)
-                        && (instr[15:12] == 4'h3);   // OP_IN
-
-    // Effective OSR value: if autopull fires this cycle, OUT sees the refilled data
-    wire [31:0] osr_eff       = autopull_hit ? {24'b0, tx_fifo[tx_rd[2:0]]} : osr;
-    wire [4:0]  osr_count_eff = autopull_hit ? 5'd8 : osr_count;
-
-    reg [15:0] load_shift;
-    reg [7:0]  cfg_shift;
-    reg [3:0]  load_bit;
-    reg [2:0]  cfg_bit;
-    reg [4:0]  load_addr;
-    reg        host_clk_d;
-    reg        load_mode;
-    reg        uio3_d;
-    wire       host_clk_rise = uio_in[1] & ~host_clk_d;
-    wire       load_start    = uio_in[3] & ~uio3_d;
-    wire [7:0] cfg_byte      = {cfg_shift[6:0], uio_in[0]};
-
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            host_clk_d <= 1'b0;
-            uio3_d     <= 1'b0;
-        end else begin
-            host_clk_d <= uio_in[1];
-            uio3_d     <= uio_in[3];
+        if (rstn_i) begin
+            assert (!(tx_push && tx_full && !tx_pop));
+            assert (!(rx_pop && rx_empty));
+            assert (!(rx_push && rx_full));
+            assert (!(tx_pop && tx_empty));
         end
     end
 
-    wire [3:0] opcode    = instr[15:12];
-    wire [3:0] operand   = instr[11:8];
-    wire [3:0] side_set  = instr[7:4];
-    wire [3:0] delay_imm = instr[3:0];
-    wire [4:0] jump_tgt  = {operand[3], side_set};
-
-    localparam OP_NOP    = 4'h0;
-    localparam OP_JMP    = 4'h1;
-    localparam OP_WAIT   = 4'h2;
-    localparam OP_IN     = 4'h3;
-    localparam OP_OUT    = 4'h4;
-    localparam OP_PUSH   = 4'h5;
-    localparam OP_PULL   = 4'h6;
-    localparam OP_MOV    = 4'h7;
-    localparam OP_SET    = 4'h8;
-    localparam OP_IRQ    = 4'h9;
-    localparam OP_DELAY  = 4'hA;
-    localparam OP_TOGGLE = 4'hB;
-    localparam OP_SAMPLE = 4'hC;
-    localparam OP_HALT   = 4'hF;
-
-    wire [7:0] wait_rise_event = uio_in & ~uio_in_prev;
-    wire [7:0] wait_fall_event = ~uio_in & uio_in_prev;
-    wire wait_edge_cycle = !uio_in[3] && !load_mode && tick &&
-                           state == S_EXEC && opcode == OP_WAIT;
-    wire [7:0] wait_rise_clear_mask =
-        (wait_edge_cycle && side_set[0] && operand[0] &&
-         wait_rise_pending[operand[3:1]]) ? (8'b1 << operand[3:1]) : 8'b0;
-    wire [7:0] wait_fall_clear_mask =
-        (wait_edge_cycle && side_set[0] && !operand[0] &&
-         wait_fall_pending[operand[3:1]]) ? (8'b1 << operand[3:1]) : 8'b0;
-    wire tx_dequeue = tick && (state == S_EXEC) &&
-                      ((opcode == OP_OUT && autopull_hit) ||
-                       (opcode == OP_PULL && !tx_empty));
-    wire tx_enqueue = host_write_req && ((tx_count != 4'd8) || tx_dequeue);
-    wire rx_enqueue = tick && (state == S_EXEC) &&
-                      ((opcode == OP_PUSH && (!rx_full || rx_dequeue)) ||
-                       autopush_hit);
-
-    reg [4:0] pc_target;
-    reg [7:0] next_pin_out;
-
-    integer i;
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            pc <= 5'd0; instr <= 16'h0000;
-            osr <= 32'h0; isr <= 32'h0;
-            osr_count <= 5'd0; isr_count <= 5'd0;
-            x_reg <= 8'h0; y_reg <= 8'h0;
-            pin_out <= 8'h0; pin_oe <= 8'h0;
-            delay_cnt <= 16'h0; state <= S_FETCH; next_state <= S_FETCH;
-            irq_pending <= 1'b0;
-            uio_in_prev <= 8'h00;
-            wait_rise_pending <= 8'h00;
-            wait_fall_pending <= 8'h00;
-            tx_rd <= 4'd0;
-            rx_wr <= 4'd0;
-            load_shift <= 16'h0; cfg_shift <= 8'h0;
-            load_bit <= 4'd0; cfg_bit <= 3'd0;
-            load_addr <= 5'd0; load_mode <= 1'b0;
-            cfg_clkdiv_int <= 16'd0; cfg_clkdiv_frac <= 8'd0;
-            cfg_wrap_top <= 5'd31; cfg_wrap_bottom <= 5'd0;
-            cfg_shift_dir <= 2'd0;
-            cfg_autopull <= 1'b0; cfg_autopush <= 1'b0;
-            cfg_pull_thresh <= 5'd0; cfg_push_thresh <= 5'd31;
-            cfg_side_count <= 4'd0;
-            for (i = 0; i < 32; i = i + 1) imem[i] <= 16'hF000;
-        end else begin
-            uio_in_prev <= uio_in;
-            if (uio_in[3] || load_mode) begin
-                wait_rise_pending <= 8'h00;
-                wait_fall_pending <= 8'h00;
-            end else begin
-                wait_rise_pending <= (wait_rise_pending & ~wait_rise_clear_mask) |
-                                     wait_rise_event;
-                wait_fall_pending <= (wait_fall_pending & ~wait_fall_clear_mask) |
-                                     wait_fall_event;
-            end
-
-            if (load_start) begin
-                load_mode  <= 1'b1;
-                load_addr  <= 5'd0;
-                load_bit   <= 4'd0;
-                cfg_bit    <= 3'd0;
-                load_shift <= 16'h0;
-                cfg_shift  <= 8'h0;
-            end else if (uio_in[3]) begin
-                load_mode <= 1'b1;
-                if (host_clk_rise) begin
-                    if (uio_in[2] == 1'b0) begin
-                        load_shift <= {load_shift[14:0], uio_in[0]};
-                        if (load_bit == 4'd15) begin
-                            imem[load_addr] <= {load_shift[14:0], uio_in[0]};
-                            load_bit  <= 4'd0;
-                            load_addr <= load_addr + 1'b1;
-                        end else begin
-                            load_bit <= load_bit + 1'b1;
-                        end
-                    end else begin
-                        cfg_shift <= cfg_byte[6:0];
-                        if (cfg_bit == 3'd7) begin
-                            case (load_addr)
-                                5'd0:  cfg_clkdiv_int[7:0]  <= cfg_byte;
-                                5'd1:  cfg_clkdiv_int[15:8] <= cfg_byte;
-                                5'd2:  cfg_clkdiv_frac      <= cfg_byte;
-                                5'd3:  cfg_wrap_top         <= cfg_byte[4:0];
-                                5'd4:  cfg_wrap_bottom      <= cfg_byte[4:0];
-                                5'd5:  cfg_shift_dir        <= cfg_byte[1:0];
-                                5'd6:  cfg_autopull         <= cfg_byte[0];
-                                5'd7:  cfg_autopush         <= cfg_byte[0];
-                                5'd8:  cfg_pull_thresh      <= cfg_byte[4:0];
-                                5'd9:  cfg_push_thresh      <= cfg_byte[4:0];
-                                5'd10: cfg_side_count       <= cfg_byte[3:0];
-                                default: ;
-                            endcase
-                            cfg_bit   <= 3'd0;
-                            load_addr <= load_addr + 1'b1;
-                        end else begin
-                            cfg_bit <= cfg_bit + 1'b1;
-                        end
-                    end
-                end
-            end else if (load_mode) begin
-                load_mode  <= 1'b0;
-                pc         <= 5'd0;
-                state      <= S_FETCH;
-                next_state <= S_FETCH;
-                osr_count  <= 5'd0;
-                isr_count  <= 5'd0;
-            end
-
-            if (!uio_in[3] && !load_mode && tick) begin
-                case (state)
-                    S_FETCH: begin
-                        instr <= imem[pc];
-                        state <= S_EXEC;
-                    end
-
-                    S_EXEC: begin
-                        pc_target = pc;
-                        next_pin_out = pin_out;
-
-                        if (side_mask != 4'b0000 &&
-                            opcode != OP_SET && opcode != OP_TOGGLE &&
-                            opcode != OP_WAIT) begin
-                            next_pin_out[3:0] =
-                                (next_pin_out[3:0] & ~side_mask) |
-                                (side_set & side_mask);
-                        end
-
-                        next_state = S_FETCH;
-
-                        case (opcode)
-                            OP_NOP: pc_target = pc + 1'b1;
-
-                            OP_JMP: begin
-                                case (operand[2:0])
-                                    3'b100: begin
-                                        if (x_reg != 8'h0) begin
-                                            x_reg <= x_reg - 1'b1;
-                                            pc_target = jump_tgt;
-                                        end else pc_target = pc + 1'b1;
-                                    end
-                                    3'b101: begin
-                                        if (y_reg != 8'h0) begin
-                                            y_reg <= y_reg - 1'b1;
-                                            pc_target = jump_tgt;
-                                        end else pc_target = pc + 1'b1;
-                                    end
-                                    3'b110: begin
-                                        if (x_reg == 8'h0) pc_target = jump_tgt;
-                                        else pc_target = pc + 1'b1;
-                                    end
-                                    3'b111: begin
-                                        if (y_reg == 8'h0) pc_target = jump_tgt;
-                                        else pc_target = pc + 1'b1;
-                                    end
-                                    default: pc_target = jump_tgt;
-                                endcase
-                            end
-
-                            OP_WAIT: begin
-                                if ((!side_set[0] &&
-                                     uio_in[operand[3:1]] == operand[0]) ||
-                                    (side_set[0] && operand[0] &&
-                                     wait_rise_pending[operand[3:1]]) ||
-                                    (side_set[0] && !operand[0] &&
-                                     wait_fall_pending[operand[3:1]]))
-                                    pc_target = pc + 1'b1;
-                                else
-                                    next_state = S_EXEC;
-                            end
-
-                            OP_IN: begin
-                                isr <= {isr[30:0], uio_in[operand[2:0]]};
-                                isr_count <= isr_count + 1'b1;
-                                pc_target = pc + 1'b1;
-                            end
-
-                            OP_OUT: begin
-                                next_pin_out[operand[2:0]] = osr_eff[0];
-                                if (cfg_shift_dir == 2'd0) osr <= {1'b0, osr_eff[31:1]};
-                                else                       osr <= {osr_eff[30:0], 1'b0};
-                                if (osr_count_eff > 5'd0)
-                                    osr_count <= osr_count_eff - 1'b1;
-                                if (autopull_hit) begin
-                                    tx_rd    <= tx_rd + 1'b1;
-                                end
-                                pc_target = pc + 1'b1;
-                            end
-
-                            OP_PUSH: begin
-                                if (!rx_full || rx_dequeue) begin
-                                    rx_fifo[rx_wr[2:0]] <= isr[7:0];
-                                    rx_wr <= rx_wr + 1'b1;
-                                    isr_count <= 5'd0;
-                                    pc_target = pc + 1'b1;
-                                end else next_state = S_EXEC;
-                            end
-
-                            OP_PULL: begin
-                                if (!tx_empty) begin
-                                    osr <= {24'b0, tx_fifo[tx_rd[2:0]]};
-                                    tx_rd <= tx_rd + 1'b1;
-                                    osr_count <= 5'd8;
-                                    pc_target = pc + 1'b1;
-                                end else next_state = S_EXEC;
-                            end
-
-                            OP_MOV: begin
-                                case (operand[2:0])
-                                    3'h0: osr <= {24'b0, x_reg};
-                                    3'h1: x_reg <= osr[7:0];
-                                    3'h2: osr <= {24'b0, y_reg};
-                                    3'h3: y_reg <= osr[7:0];
-                                    3'h4: isr <= {24'b0, uio_in};
-                                    3'h5: next_pin_out = isr[7:0];
-                                    3'h6: next_pin_out = x_reg;
-                                    3'h7: next_pin_out = y_reg;
-                                    default: ;
-                                endcase
-                                pc_target = pc + 1'b1;
-                            end
-
-                            OP_SET: begin
-                                case (operand[2:0])
-                                    3'h0: next_pin_out[3:0] = side_set;
-                                    3'h1: x_reg <= {4'b0, side_set};
-                                    3'h2: y_reg <= {4'b0, side_set};
-                                    3'h3: pin_oe <= {4'b0, side_set};
-                                    3'h4: next_pin_out[7:4] = side_set;
-                                    default: ;
-                                endcase
-                                pc_target = pc + 1'b1;
-                            end
-
-                            OP_IRQ: begin
-                                irq_pending <= 1'b1;
-                                pc_target = pc + 1'b1;
-                            end
-
-                            OP_DELAY: begin
-                                if ({x_reg, y_reg} == 16'h0) begin
-                                    pc_target = pc + 1'b1;
-                                end else begin
-                                    delay_cnt  <= {x_reg, y_reg};
-                                    pc_target  = pc + 1'b1;
-                                    next_state = S_DELAY;
-                                end
-                            end
-
-                            OP_TOGGLE: begin
-                                next_pin_out[3:0] = next_pin_out[3:0] ^ side_set;
-                                pc_target = pc + 1'b1;
-                            end
-
-                            OP_SAMPLE: begin
-                                isr <= {24'b0, uio_in};
-                                isr_count <= 5'd8;
-                                pc_target = pc + 1'b1;
-                            end
-
-                            OP_HALT: next_state = S_EXEC;
-
-                            default: pc_target = pc + 1'b1;
-                        endcase
-
-                        if (cfg_wrap_top >= cfg_wrap_bottom && pc_target > cfg_wrap_top)
-                            pc <= cfg_wrap_bottom;
-                        else
-                            pc <= pc_target;
-
-                        pin_out <= next_pin_out;
-
-                        // Autopush (autopull is now folded into OP_OUT)
-                        if (autopush_hit) begin
-                            rx_fifo[rx_wr[2:0]] <= {isr[6:0], uio_in[operand[2:0]]};
-                            rx_wr <= rx_wr + 1'b1;
-                            isr_count <= 5'd0;
-                        end
-
-                        if (delay_imm != 4'd0 && next_state == S_FETCH) begin
-                            delay_cnt  <= {12'b0, delay_imm};
-                            next_state = S_DELAY;
-                        end
-
-                        if (next_state != S_EXEC)
-                            state <= next_state;
-                    end
-
-                    S_DELAY: begin
-                        if (delay_cnt == 16'd0) state <= S_FETCH;
-                        else                    delay_cnt <= delay_cnt - 1'b1;
-                    end
-
-                    default: state <= S_FETCH;
-                endcase
-            end
-        end
+    // Open-drain pins never drive high
+    always @(*) begin
+        if (rstn_i) assert (((uio_out & uio_oe) & cfg_od_mask) == 8'h00);
     end
-
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            tx_wr <= 4'd0;
-            rx_rd <= 4'd0;
-            host_fifo_data <= 8'h00;
-        end else begin
-            if (host_write_req && ((tx_count != 4'd8) || tx_dequeue)) begin
-                tx_fifo[tx_wr[2:0]] <= ui_in;
-                tx_wr <= tx_wr + 1'b1;
-            end
-            if (host_read_req && (rx_count != 4'd0)) begin
-                host_fifo_data <= rx_fifo[rx_rd[2:0]];
-                rx_rd <= rx_rd + 1'b1;
-            end
-        end
-    end
-
-    always @(posedge clk or negedge rst_n) begin
-        if (!rst_n) begin
-            tx_count <= 4'd0;
-            rx_count <= 4'd0;
-        end else begin
-            case ({tx_enqueue, tx_dequeue})
-                2'b10: tx_count <= tx_count + 1'b1;
-                2'b01: tx_count <= tx_count - 1'b1;
-                default: tx_count <= tx_count;
-            endcase
-            case ({rx_enqueue, rx_dequeue})
-                2'b10: rx_count <= rx_count + 1'b1;
-                2'b01: rx_count <= rx_count - 1'b1;
-                default: rx_count <= rx_count;
-            endcase
-        end
-    end
-
-    assign uo_out  = (host_fifo_mode && host_read_req) ? host_fifo_data : pin_out;
-    assign uio_out = pin_out;
-    assign uio_oe  = pin_oe;
-
-    wire _unused = &{ena, ui_in, 1'b0};
+`endif
 
 endmodule
 

@@ -1,0 +1,42 @@
+# pre-layout synthesis report (yosys 0.33 + ABC, IHP-Open-PDK sg13g2_stdcell, 2026-10-01)
+cells (typ map)        : 7830
+flip-flops             : 1050
+std-cell area (typ)    : 121865.121000 um^2
+6x4 tile area (~)      : 720000 um^2  -> utilisation 16.9 %
+ABC comb. delay typ    : 5999.15 ps
+ABC comb. delay slow   : 9410.94 ps   (budget 20000 ps at 50 MHz, minus clk->q/setup/skew)
+
+ABC: Start-point = pi56 (\u_core.pc [4]).  End-point = po143 ($auto$rtlil.cc:2609:MuxGate$41453).
+
+   Number of cells:               7830
+     sg13g2_a21o_1                 135
+     sg13g2_a21oi_1                698
+     sg13g2_a221oi_1                84
+     sg13g2_a22oi_1                743
+     sg13g2_and2_1                 129
+     sg13g2_and3_1                  36
+     sg13g2_and4_1                  16
+     sg13g2_buf_1                  479
+     sg13g2_dfrbpq_1              1050
+     sg13g2_inv_1                  222
+     sg13g2_mux2_1                 821
+     sg13g2_mux4_1                  54
+     sg13g2_nand2_1                824
+     sg13g2_nand2b_1               139
+     sg13g2_nand3_1                169
+     sg13g2_nand3b_1                11
+     sg13g2_nand4_1                214
+     sg13g2_nor2_1                 510
+     sg13g2_nor2b_1                106
+     sg13g2_nor3_1                 230
+     sg13g2_nor4_1                  74
+     sg13g2_o21ai_1                847
+     sg13g2_or2_1                   59
+     sg13g2_or3_1                   12
+     sg13g2_or4_1                    7
+     sg13g2_tiehi                    1
+     sg13g2_xnor2_1                104
+     sg13g2_xor2_1                  56
+
+   Chip area for module '\tt_um_protocol_engine': 121865.121000
+
