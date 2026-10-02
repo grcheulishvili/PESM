@@ -1,0 +1,18 @@
+corner  path   group         worst slack (ns)
+typ     setup  asynchronous  15.992
+typ     setup  clk           10.350
+typ     hold   asynchronous  0.476
+typ     hold   clk           0.325
+slow    setup  asynchronous  14.215
+slow    setup  clk           4.494
+slow    hold   asynchronous  0.924
+slow    hold   clk           0.680
+fast    setup  asynchronous  15.914
+fast    setup  clk           13.754
+fast    hold   asynchronous  0.230
+fast    hold   clk           0.121
+detailed-route DRC markers : 0
+max slew/cap/fanout viol.  : 1
+[INFO ANT-0002] Found 0 net violations.
+Design area 153912 u^2 17% utilization.
+note: the single max-fanout entry (_07292_/Y, 10 loads) is 6 logic loads + 4 antenna diodes inserted by post-route antenna repair; no slew or capacitance violations.

@@ -42,7 +42,7 @@ matters for the board wiring.
 | 15 | S3 | Blocking and non-blocking assignments mixed on `next_state` in one clocked block (sim/synth mismatch risk); 20+ Verilator BLKSEQ warnings | `verilator -Wall` | Verilator `-Wall` clean |
 | 16 | S3 | `irq_pending` is write-only (no host read): synthesis removes it | Verilator UNUSED | `IRQ` visible in STATUS0 |
 | 17 | S3 | Config path never tested: tb pokes `cfg_*` hierarchically | tb.v `write_cfg` | all tests use the real SPI loader, including readback |
-| 18 | S3 | `config.json` hand-sets `DIE_AREA "0 0 1002 432"` (sky130 tile pitch) and non-template PDN pitch/width; the TT IHP flow derives the die from `info.yaml` | diff vs `ttihp-verilog-template` | template `config.json` restored |
+| 18 | S3 | `config.json` hand-sets `DIE_AREA "0 0 1002 432"` (sky130 tile pitch; the IHP 6x4 die is 1289.28 × 710.64 µm) and `FP_SIZING`; the TT flow generates the die from `info.yaml`. *Correction:* an earlier revision of this audit also called `FP_PDN_VPITCH 50.0` / `FP_PDN_VWIDTH 2.1` non-template. That was wrong: they are the values of the CMOS5L template branch, which I had not compared against | diff vs `ttihp-verilog-template@cmos5l` | CMOS5L template `config.json` |
 | 19 | S3 | `info.yaml` lists `tt_um_protocol_engine.v` and pins that do not match the RTL; README §10/§14 claim formal/CRV coverage that does not exist; Python assembler mentioned but not in the archive | inspection | rewritten; claims match what was run |
 
 ## C. Items in `corrections.txt`
@@ -58,14 +58,20 @@ matters for the board wiring.
 
 ## D. Remaining risks (not closed by this work)
 
-1. **Signoff is not complete.** `pnr/run_pnr.sh` runs OpenROAD (place, CTS,
-   route, antenna repair, OpenRCX, three-corner STA) on the real TT 6x4
-   template, but it is not LibreLane: synthesis strategy, resizer settings
-   and extraction details differ, so CI numbers will differ somewhat. Magic/KLayout DRC, LVS, the TT precheck and GDS have not
-   been run. The TT `gds` workflow is the signoff.
+1. **Wrong PDK in the first CI run (fixed in this revision).** The scaffold
+   was built from the default branch of `ttihp-verilog-template`
+   (`ihp-sg13g2`). The competition targets **IHP CMOS5L**
+   (`ihp-sg13cmos5l`, template branch `cmos5l`). The SG13G2 CI run (commit
+   55910b7) was clean (see README), but it is not the target process. The
+   workflows, `src/config.json` and `test/Makefile` now follow the `cmos5l`
+   template. CMOS5L has Metal1-4 + TopMetal1; Tiny Tapeout limits signal
+   routing to Metal4 and puts the power straps on Metal4. Local OpenROAD
+   results on CMOS5L are in the README; the CMOS5L `gds` workflow has **not**
+   been run yet.
 2. **Gate-level CI (resolved).** The TT `gl_test` action installs
    TinyTapeout's Icarus 13 build, which drives the IHP `delayed_*` nets. The
-   unmodified cell models pass the full suite with it.
+   unmodified cell models pass the full suite with it (confirmed in CI on
+   SG13G2 and locally on the CMOS5L models).
    `synth/make_gl_models.sh` is only needed with Icarus 12.
 3. **Model independence.** The reference model and RTL share an author. One
    common-mode error (JPIN decoded as class A) was in both and only showed

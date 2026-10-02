@@ -1,0 +1,106 @@
+Startpoint: _14169_ (rising edge-triggered flip-flop clocked by clk)
+Endpoint: _14533_ (recovery check against rising-edge clock clk)
+Path Group: asynchronous
+Path Type: max
+Corner: slow
+
+Fanout      Cap     Slew    Delay     Time   Description
+---------------------------------------------------------------------------------
+                            0.000    0.000   clock clk (rise edge)
+                            0.772    0.772   clock network delay (propagated)
+                   0.050    0.000    0.772 ^ _14169_/CLK (sg13cmos5l_dfrbpq_1)
+     2    0.007    0.057    0.299    1.071 ^ _14169_/Q (sg13cmos5l_dfrbpq_1)
+     6    0.079    0.511    0.974    2.045 ^ hold4995/X (sg13cmos5l_dlygate4sd3_1)
+     8    0.081    0.521    0.608    2.653 ^ place3275/X (sg13cmos5l_buf_1)
+     8    0.073    0.466    0.604    3.256 ^ place3330/X (sg13cmos5l_buf_1)
+     8    0.073    0.464    0.564    3.821 ^ place3333/X (sg13cmos5l_buf_1)
+     8    0.072    0.458    0.566    4.387 ^ place3335/X (sg13cmos5l_buf_1)
+     8    0.085    0.542    0.618    5.005 ^ place3339/X (sg13cmos5l_buf_1)
+     8    0.075    0.479    0.601    5.606 ^ place3341/X (sg13cmos5l_buf_1)
+     8    0.068    0.433    0.554    6.161 ^ place3342/X (sg13cmos5l_buf_1)
+                   0.434    0.008    6.169 ^ _14533_/RESET_B (sg13cmos5l_dfrbpq_1)
+                                     6.169   data arrival time
+
+                           20.000   20.000   clock clk (rise edge)
+                            0.647   20.647   clock network delay (propagated)
+                           -0.250   20.397   clock uncertainty
+                            0.025   20.422   clock reconvergence pessimism
+                                    20.422 ^ _14533_/CLK (sg13cmos5l_dfrbpq_1)
+                           -0.360   20.062   library recovery time
+                                    20.062   data required time
+---------------------------------------------------------------------------------
+                                    20.062   data required time
+                                    -6.169   data arrival time
+---------------------------------------------------------------------------------
+                                    13.893   slack (MET)
+
+
+Startpoint: _14128_ (rising edge-triggered flip-flop clocked by clk)
+Endpoint: _14031_ (rising edge-triggered flip-flop clocked by clk)
+Path Group: clk
+Path Type: max
+Corner: slow
+
+Fanout      Cap     Slew    Delay     Time   Description
+---------------------------------------------------------------------------------
+                            0.000    0.000   clock clk (rise edge)
+                            0.757    0.757   clock network delay (propagated)
+                   0.054    0.000    0.757 ^ _14128_/CLK (sg13cmos5l_dfrbpq_1)
+     3    0.019    0.130    0.360    1.116 ^ _14128_/Q (sg13cmos5l_dfrbpq_1)
+     7    0.044    0.287    0.333    1.449 ^ place3453/X (sg13cmos5l_buf_1)
+     7    0.033    0.219    0.349    1.798 ^ place3454/X (sg13cmos5l_buf_1)
+     2    0.056    0.540    0.548    2.346 v _07063_/Y (sg13cmos5l_nand2_1)
+     6    0.045    0.705    0.567    2.913 ^ _07068_/Y (sg13cmos5l_o21ai_1)
+     1    0.006    0.153    0.216    3.129 v _07073_/Y (sg13cmos5l_nor2_1)
+     2    0.014    0.268    0.299    3.428 ^ _07075_/Y (sg13cmos5l_o21ai_1)
+     2    0.013    0.192    0.268    3.696 v _07076_/Y (sg13cmos5l_a21oi_1)
+     3    0.020    0.344    0.393    4.089 ^ _07078_/Y (sg13cmos5l_o21ai_1)
+     3    0.017    0.128    0.351    4.440 ^ _07080_/X (sg13cmos5l_a21o_1)
+     3    0.010    0.176    0.217    4.657 v _07093_/Y (sg13cmos5l_a221oi_1)
+     5    0.026    0.351    0.373    5.029 ^ _07094_/Y (sg13cmos5l_nor2b_1)
+     1    0.004    0.053    0.254    5.283 ^ _07098_/X (sg13cmos5l_and2_1)
+     3    0.021    0.119    0.130    5.412 v _07099_/Y (sg13cmos5l_inv_1)
+     1    0.006    0.146    0.193    5.605 ^ _07109_/Y (sg13cmos5l_a22oi_1)
+     1    0.008    0.116    0.168    5.774 v _07110_/Y (sg13cmos5l_o21ai_1)
+     1    0.006    0.135    0.165    5.939 ^ _07111_/Y (sg13cmos5l_a22oi_1)
+     5    0.019    0.210    0.248    6.187 v _07112_/Y (sg13cmos5l_o21ai_1)
+     3    0.042    0.854    0.762    6.949 ^ _08287_/Y (sg13cmos5l_nor3_1)
+     4    0.038    0.655    0.685    7.635 v _08290_/Y (sg13cmos5l_o21ai_1)
+     4    0.020    0.213    0.425    8.060 v _08538_/Y (sg13cmos5l_nand2b_1)
+     2    0.009    0.099    0.317    8.376 ^ _08542_/X (sg13cmos5l_mux2_1)
+     8    0.072    0.462    0.452    8.828 ^ place2569/X (sg13cmos5l_buf_1)
+     2    0.013    0.109    0.362    9.190 ^ _08609_/X (sg13cmos5l_mux2_1)
+     2    0.012    0.132    0.121    9.311 v _08610_/Y (sg13cmos5l_nor2_1)
+     6    0.068    1.790    1.496   10.806 ^ _08614_/Y (sg13cmos5l_nor4_1)
+     5    0.061    0.408    0.714   11.520 ^ _08635_/Y (sg13cmos5l_nand3b_1)
+     3    0.013    0.190    0.292   11.813 v _08637_/Y (sg13cmos5l_o21ai_1)
+     1    0.009    0.097    0.409   12.222 v _08779_/X (sg13cmos5l_mux4_1)
+     1    0.004    0.046    0.154   12.376 v _08780_/X (sg13cmos5l_and2_1)
+     3    0.045    0.701    0.605   12.981 ^ _08787_/Y (sg13cmos5l_o21ai_1)
+     3    0.025    0.175    0.489   13.470 ^ _08796_/X (sg13cmos5l_a21o_1)
+     2    0.023    0.178    0.452   13.922 ^ _08801_/X (sg13cmos5l_mux4_1)
+     5    0.041    0.429    0.434   14.355 v _09130_/Y (sg13cmos5l_o21ai_1)
+     2    0.016    0.134    0.517   14.873 v _09278_/X (sg13cmos5l_mux4_1)
+     3    0.023    0.391    0.396   15.269 ^ _09291_/Y (sg13cmos5l_o21ai_1)
+     1    0.004    0.139    0.204   15.473 v _09294_/Y (sg13cmos5l_a22oi_1)
+     2    0.022    0.139    0.292   15.765 v _09295_/X (sg13cmos5l_or2_1)
+     1    0.010    0.318    0.218   15.983 ^ _10494_/Y (sg13cmos5l_a22oi_1)
+     1    0.004    0.101    0.177   16.159 v _10495_/Y (sg13cmos5l_o21ai_1)
+     1    0.004    0.064    0.663   16.823 v hold3963/X (sg13cmos5l_dlygate4sd3_1)
+                   0.064    0.000   16.823 v _14031_/D (sg13cmos5l_dfrbpq_1)
+                                    16.823   data arrival time
+
+                           20.000   20.000   clock clk (rise edge)
+                            0.654   20.654   clock network delay (propagated)
+                           -0.250   20.404   clock uncertainty
+                            0.025   20.428   clock reconvergence pessimism
+                                    20.428 ^ _14031_/CLK (sg13cmos5l_dfrbpq_1)
+                           -0.188   20.240   library setup time
+                                    20.240   data required time
+---------------------------------------------------------------------------------
+                                    20.240   data required time
+                                   -16.823   data arrival time
+---------------------------------------------------------------------------------
+                                     3.417   slack (MET)
+
+

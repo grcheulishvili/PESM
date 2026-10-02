@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Local physical-implementation check (NOT the TT signoff flow).
-#   PDK_ROOT=/path/IHP-Open-PDK TT_TOOLS=/path/tt-support-tools ./run_pnr.sh
+#   PDK_ROOT=/path/IHP-Open-PDK TT_TOOLS=/path/tt-support-tools [PDK=ihp-sg13cmos5l] ./run_pnr.sh
+# TT_TOOLS must be the tt-support-tools branch for the PDK (ihp-sg13cmos5l branch for CMOS5L).
 # Needs: yosys, python with the 'openroad' pip package (OpenROAD bindings).
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -8,13 +9,15 @@ cd "$(dirname "$0")"
 PY=${PYTHON:-python3}
 OUT=${OUT:-$(pwd)/out}
 mkdir -p "$OUT"
-LIB=$PDK_ROOT/ihp-sg13g2/libs.ref/sg13g2_stdcell/lib
+export PDK=${PDK:-ihp-sg13cmos5l}
+SCL=${PDK#ihp-}
+LIB=$PDK_ROOT/$PDK/libs.ref/${SCL}_stdcell/lib
 # Liberty without excluded / dont_use cells for synthesis
-"$PY" - "$LIB/sg13g2_stdcell_typ_1p20V_25C.lib" "$OUT/synth.lib" <<'PYEOF'
+"$PY" - "$LIB/${SCL}_stdcell_typ_1p20V_25C.lib" "$OUT/synth.lib" "$SCL" <<'PYEOF'
 import re, sys
-src, dst = sys.argv[1:3]
-excl = {"sg13g2_lgcp_1","sg13g2_sighold","sg13g2_slgcp_1","sg13g2_sdfbbp_1","sg13g2_dfrbp_2",
-        "sg13g2_buf_16","sg13g2_inv_16"}
+src, dst, scl = sys.argv[1:4]
+excl = {f"{scl}_{c}" for c in ("lgcp_1", "sighold", "slgcp_1", "sdfbbp_1", "dfrbp_2",
+                                "buf_16", "inv_16")}
 txt = open(src).read()
 out, i = [], 0
 for m in re.finditer(r'\n\s*cell\s*\(\s*"?(\w+)"?\s*\)\s*\{', txt):
@@ -37,6 +40,7 @@ while True:
     pos = j
 open(dst, "w").write("".join(res))
 PYEOF
+if [ "${STA_ONLY:-0}" != 1 ]; then
 SRC="../src/tt_um_protocol_engine.v ../src/pesm_core.v ../src/pesm_host.v ../src/pesm_fifo.v ../src/pesm_clkdiv.v ../src/pesm_sync.v"
 yosys -q -l "$OUT/synth.log" -p "
   read_liberty -lib $OUT/synth.lib
@@ -44,15 +48,16 @@ yosys -q -l "$OUT/synth.log" -p "
   synth -top tt_um_protocol_engine -flatten
   dfflibmap -liberty $OUT/synth.lib
   abc -liberty $OUT/synth.lib -D 20000
-  hilomap -hicell sg13g2_tiehi L_HI -locell sg13g2_tielo L_LO
+  hilomap -hicell ${SCL}_tiehi L_HI -locell ${SCL}_tielo L_LO
   setundef -zero
   splitnets
   opt_clean -purge
-  insbuf -buf sg13g2_buf_1 A X
+  insbuf -buf ${SCL}_buf_1 A X
   check -assert
   write_verilog -noattr -noexpr -nohex -nodec $OUT/synth.v
 "
-NETLIST=$OUT/synth.v DEF_TEMPLATE=$TT_TOOLS/tech/ihp-sg13g2/def/tt_block_6x4_pgvdd.def OUT=$OUT \
+fi
+NETLIST=$OUT/synth.v DEF_TEMPLATE=$TT_TOOLS/tech/$PDK/def/tt_block_6x4_pgvdd.def OUT=$OUT \
   "$PY" run_pnr.py 2>&1 | tee "$OUT/flow.log"
 {
   echo "corner  path   group         worst slack (ns)"

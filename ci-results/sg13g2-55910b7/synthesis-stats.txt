@@ -1,0 +1,46 @@
+157. Printing statistics.
+
+=== tt_um_protocol_engine ===
+
+        +----------Local Count, excluding submodules.
+        |        +-Local Area, excluding submodules.
+        |        | 
+     7289        - wires
+     7324        - wire bits
+     1083        - public wires
+     1118        - public wire bits
+        8        - ports
+       43        - port bits
+     7305 1.18E+05 cells
+      139 1.77E+03   sg13g2_a21o_1
+      793 7.19E+03   sg13g2_a21oi_1
+      162 2.35E+03   sg13g2_a221oi_1
+      789 8.56E+03   sg13g2_a22oi_1
+      147 1.33E+03   sg13g2_and2_1
+       37   469.93   sg13g2_and3_1
+       13  188.698   sg13g2_and4_1
+       10   72.576   sg13g2_buf_1
+     1076 5.27E+04   sg13g2_dfrbpq_1
+      227 1.24E+03   sg13g2_inv_1
+      760 1.38E+04   sg13g2_mux2_1
+       24  914.458   sg13g2_mux4_1
+      672 4.88E+03   sg13g2_nand2_1
+       97  879.984   sg13g2_nand2b_1
+      161 1.46E+03   sg13g2_nand3_1
+        9  114.307   sg13g2_nand3b_1
+      162 1.76E+03   sg13g2_nand4_1
+      734 5.33E+03   sg13g2_nor2_1
+      117 1.06E+03   sg13g2_nor2b_1
+      208 1.89E+03   sg13g2_nor3_1
+       50   544.32   sg13g2_nor4_1
+      681 6.18E+03   sg13g2_o21ai_1
+       61  553.392   sg13g2_or2_1
+       15  190.512   sg13g2_or3_1
+        6   87.091   sg13g2_or4_1
+        1    7.258   sg13g2_tiehi
+      100  1451.52   sg13g2_xnor2_1
+       54  783.821   sg13g2_xor2_1
+
+   Chip area for module '\tt_um_protocol_engine': 117753.766200
+     of which used for sequential elements: 52711.948800 (44.76%)
+

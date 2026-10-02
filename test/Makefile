@@ -21,10 +21,13 @@ SIM_BUILD				= sim_build/gl
 COMPILE_ARGS    += -DGL_TEST
 COMPILE_ARGS    += -DFUNCTIONAL
 COMPILE_ARGS    += -DSIM
-VERILOG_SOURCES += $(PDK_ROOT)/ihp-sg13g2/libs.ref/sg13g2_io/verilog/sg13g2_io.v
-VERILOG_SOURCES += $(PDK_ROOT)/ihp-sg13g2/libs.ref/sg13g2_stdcell/verilog/sg13g2_stdcell.v
-# newer IHP-Open-PDK releases keep the UDPs (ihp_mux2, ...) in a separate file
-VERILOG_SOURCES += $(wildcard $(PDK_ROOT)/ihp-sg13g2/libs.ref/sg13g2_stdcell/verilog/sg13g2_udp.v)
+# Target PDK: IHP CMOS5L (competition process). PDK=ihp-sg13g2 also works.
+PDK ?= ihp-sg13cmos5l
+SCL  = $(patsubst ihp-%,%,$(PDK))
+VERILOG_SOURCES += $(PDK_ROOT)/$(PDK)/libs.ref/$(SCL)_io/verilog/$(SCL)_io.v
+VERILOG_SOURCES += $(PDK_ROOT)/$(PDK)/libs.ref/$(SCL)_stdcell/verilog/$(SCL)_stdcell.v
+# IHP keeps the UDPs (ihp_mux2, ...) in a separate file
+VERILOG_SOURCES += $(wildcard $(PDK_ROOT)/$(PDK)/libs.ref/$(SCL)_stdcell/verilog/$(SCL)_udp.v)
 
 # this gets copied in by the GDS action workflow
 VERILOG_SOURCES += $(PWD)/gate_level_netlist.v

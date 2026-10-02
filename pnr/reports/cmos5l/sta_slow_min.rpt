@@ -1,0 +1,62 @@
+Startpoint: _14169_ (rising edge-triggered flip-flop clocked by clk)
+Endpoint: _14139_ (removal check against rising-edge clock clk)
+Path Group: asynchronous
+Path Type: min
+Corner: slow
+
+Fanout      Cap     Slew    Delay     Time   Description
+---------------------------------------------------------------------------------
+                            0.000    0.000   clock clk (rise edge)
+                            0.668    0.668   clock network delay (propagated)
+                   0.047    0.000    0.668 ^ _14169_/CLK (sg13cmos5l_dfrbpq_1)
+     2    0.006    0.054    0.266    0.934 ^ _14169_/Q (sg13cmos5l_dfrbpq_1)
+     6    0.074    0.478    0.858    1.792 ^ hold4995/X (sg13cmos5l_dlygate4sd3_1)
+                   0.478    0.004    1.796 ^ _14139_/RESET_B (sg13cmos5l_dfrbpq_1)
+                                     1.796   data arrival time
+
+                            0.000    0.000   clock clk (rise edge)
+                            0.771    0.771   clock network delay (propagated)
+                            0.250    1.021   clock uncertainty
+                           -0.081    0.940   clock reconvergence pessimism
+                                     0.940 ^ _14139_/CLK (sg13cmos5l_dfrbpq_1)
+                           -0.338    0.602   library removal time
+                                     0.602   data required time
+---------------------------------------------------------------------------------
+                                     0.602   data required time
+                                    -1.796   data arrival time
+---------------------------------------------------------------------------------
+                                     1.194   slack (MET)
+
+
+Startpoint: _13776_ (rising edge-triggered flip-flop clocked by clk)
+Endpoint: _13776_ (rising edge-triggered flip-flop clocked by clk)
+Path Group: clk
+Path Type: min
+Corner: slow
+
+Fanout      Cap     Slew    Delay     Time   Description
+---------------------------------------------------------------------------------
+                            0.000    0.000   clock clk (rise edge)
+                            0.641    0.641   clock network delay (propagated)
+                   0.050    0.000    0.641 ^ _13776_/CLK (sg13cmos5l_dfrbpq_1)
+     1    0.002    0.028    0.250    0.891 v _13776_/Q (sg13cmos5l_dfrbpq_1)
+     2    0.006    0.072    0.572    1.463 v hold3603/X (sg13cmos5l_dlygate4sd3_1)
+     1    0.004    0.051    0.065    1.529 ^ _09446_/Y (sg13cmos5l_nand2_1)
+     1    0.002    0.044    0.060    1.589 v _09447_/Y (sg13cmos5l_o21ai_1)
+                   0.044    0.000    1.589 v _13776_/D (sg13cmos5l_dfrbpq_1)
+                                     1.589   data arrival time
+
+                            0.000    0.000   clock clk (rise edge)
+                            0.741    0.741   clock network delay (propagated)
+                            0.250    0.991   clock uncertainty
+                           -0.100    0.891   clock reconvergence pessimism
+                                     0.891 ^ _13776_/CLK (sg13cmos5l_dfrbpq_1)
+                           -0.049    0.842   library hold time
+                                     0.842   data required time
+---------------------------------------------------------------------------------
+                                     0.842   data required time
+                                    -1.589   data arrival time
+---------------------------------------------------------------------------------
+                                     0.747   slack (MET)
+
+

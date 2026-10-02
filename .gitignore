@@ -16,3 +16,7 @@ runs/
 pnr/out/
 sw/*.egg-info/
 .pytest_cache/
+sim.vvp
+*.vcd
+*.fst
+__pycache__/

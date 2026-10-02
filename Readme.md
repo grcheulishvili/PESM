@@ -1,7 +1,7 @@
 # PESM v2 — Protocol Engine State Machine
 
-A microcoded, cycle-exact protocol emulator for the IHP SG13G2 (130 nm)
-Tiny Tapeout shuttle, 6×4 tiles, 50 MHz. UART, SPI, I2C and similar
+A microcoded, cycle-exact protocol emulator for the IHP CMOS5L (130 nm,
+`ihp-sg13cmos5l`) Tiny Tapeout shuttle, 6×4 tiles, 50 MHz. UART, SPI, I2C and similar
 protocols run as firmware. The chip has no hard protocol blocks and no
 general-purpose ALU.
 
@@ -86,12 +86,38 @@ Everything below was run on this exact source tree.
 | Mutation check | `test/mutate.sh`: 6 injected core bugs | all caught (`!osre` off-by-one and RX pending-full only by directed tests, the rest also by CRV) |
 | Formal, unbounded | `make formal`: `pesm_fifo` (PDR; incl. data-ordering proof), `pesm_clkdiv` (k-induction at full 16.8 width: period ∈ {I, I+1}, exact SYNC/half phase), `pesm_host` (imem/cfg immutable while running), `pesm_core` (k-induction: prefetch consistency `instr == imem[pc]`, FIFO handshake safety, pre-delayed instructions execute only on ticks, stall ⇒ pc frozen, HALT freezes pins, edge-WAIT needs an edge, autopush only at threshold, side-set isolation) | pass |
 | Formal, bounded | top-level cross-block FIFO handshakes incl. the registered RX write never hitting a full FIFO, open drain never drives 1 (BMC 40) | pass |
-| Gate level | yosys netlist (SG13G2) + unmodified IHP cell models, Icarus 13 (the version the TT `gl_test` action installs) | pass |
-| Area (pre-layout) | `synth/run_synth.sh`, SG13G2 typ | 8 483 cells, 1 076 flops, 122 955 µm² = 13.4 % of the 1289.28 × 710.64 µm 6×4 die |
-| Timing (pre-layout) | ABC `stime`, zero wire load | 5.4 ns typ / 8.4 ns slow. Optimistic: no wires, fanout or derate; use the routed STA below |
-| Place & route + STA | `pnr/run_pnr.sh`: OpenROAD (pip `openroad` bindings) on the TT 6×4 IHP DEF template: PDN, timing-driven placement, CTS, setup/hold repair (3 ns / 0.15 ns targets), global + detailed route, diode antenna repair with post-route ECO loop, OpenRCX extraction, typ/slow/fast STA with 5 % derate, 0.25 ns uncertainty, 4 ns I/O delays (`pnr/reports/`) | worst setup slack +10.35 typ / **+4.49 slow** (1.08 V/125 °C) / +13.75 fast ns; worst hold slack +0.33 / +0.68 / **+0.12** ns; **0** detailed-route DRC markers; **0** antenna violations; 0 slew/cap violations (one max-fanout entry = 6 logic loads + 4 antenna diodes); 153 912 µm² placed (17 %) |
-| Post-route gate level | routed netlist, all 20 cocotb tests incl. CRV and toolchain, Icarus 13 | pass |
-| DRC (KLayout/Magic), LVS, TT precheck, GDS | TT `gds` workflow | **not run here** (no KLayout/Magic/Netgen; GitHub container registry blocked) |
+
+### Physical implementation
+
+Target process is **IHP CMOS5L** (`ihp-sg13cmos5l`, template branch
+`cmos5l`): Metal1–4 + TopMetal1, signal routing limited to Metal4, 6×4 die
+1289.28 × 710.64 µm. The first CI run (commit 55910b7) was made on SG13G2 by
+mistake; it is kept as a reference (`ci-results/`).
+
+| | CMOS5L (target) | SG13G2 (reference) |
+|---|---|---|
+| Flow | local OpenROAD, `pnr/run_pnr.sh` (not LibreLane) | **Tiny Tapeout CI**, LibreLane 3.0.5 |
+| Setup slack typ / slow / fast | +9.68 / **+3.42** / +13.34 ns | +10.44 / **+4.87** / +13.73 ns |
+| Hold slack typ / slow / fast | +0.37 / +0.75 / **+0.16** ns | +0.31 / +0.63 / **+0.12** ns |
+| Routing DRC | 0 markers (TritonRoute) | 0 (router), Magic DRC 0, KLayout DRC pass |
+| LVS | not run locally | 0 errors (Netgen) |
+| Antenna | 0 violations | 0 violations |
+| Max slew / cap | 0 | 0 |
+| Max fanout entries | 0 | 74, all clock-tree leaf buffers (warning only) |
+| Std-cell area, utilisation | 157 459 µm², 17 % | 150 131 µm², 16.6 % |
+| TT precheck | not run | 10/10 pass |
+| Gate-level tests on the routed netlist | 20/20 (Icarus 13, CMOS5L models) | 20/20 (CI `gl_test`) |
+| RTL tests in CI | – | 20/20 |
+| Reports | `pnr/reports/cmos5l/` | `ci-results/sg13g2-55910b7/`, `pnr/reports/sg13g2/` |
+
+**Not yet done:** the CMOS5L `gds`, `precheck` and `gl_test` workflows. Push
+this revision to run them; LibreLane/KLayout/Magic/Netgen on CMOS5L are the
+signoff, the local OpenROAD numbers are a prediction (on SG13G2 the same
+local flow predicted +4.49 ns slow-corner setup against +4.87 ns in CI).
+
+Pre-layout synthesis (`synth/run_synth.sh`, identical for both PDKs: same
+cell set and areas): 8 483 cells, 1 076 flops, 122 955 µm² = 13.4 % of the
+die.
 
 ## Running
 
@@ -99,9 +125,12 @@ Everything below was run on this exact source tree.
 make lint
 make test                 # needs iverilog + cocotb (test/requirements.txt)
 make formal               # needs yosys, sby, z3 >= 4.12
+# PDK defaults to ihp-sg13cmos5l (IHP-Open-PDK rev 2bbec755, the one the TT action pins);
+# TT_TOOLS = tt-support-tools, branch ihp-sg13cmos5l
 PDK_ROOT=/path/IHP-Open-PDK make synth
-PDK_ROOT=/path/IHP-Open-PDK make gl
-PDK_ROOT=/path/IHP-Open-PDK TT_TOOLS=/path/tt-support-tools pnr/run_pnr.sh   # ~50 min, 2 cores
+PDK_ROOT=/path/IHP-Open-PDK make gl                                          # Icarus >= 13
+PDK_ROOT=/path/IHP-Open-PDK TT_TOOLS=/path/tt-support-tools pnr/run_pnr.sh   # ~70 min, 2 cores
+STA_ONLY=1 ... pnr/run_pnr.sh                                                # re-extract + STA on the routed checkpoint
 CRV_ITERS=300 CRV_CYCLES=2000 CRV_SEED=7 make -C test COCOTB_TEST_MODULES=test_crv
 ```
 

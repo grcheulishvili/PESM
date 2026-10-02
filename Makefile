@@ -3,10 +3,14 @@
 #   make test     cocotb directed + constrained-random + toolchain (RTL)
 #   make sw-test  pytest of the Python toolchain (no simulator)
 #   make formal   SymbiYosys proofs
-#   make synth    pre-layout IHP SG13G2 synthesis + ABC timing (needs PDK_ROOT)
-#   make gl       gate-level cocotb on the yosys netlist (needs PDK_ROOT)
+#   make synth    pre-layout synthesis + ABC timing (needs PDK_ROOT; PDK=ihp-sg13cmos5l default)
+#   make gl       gate-level cocotb on the yosys netlist (needs PDK_ROOT, Icarus >= 13)
 #   make pnr      OpenROAD place/route/STA on the TT 6x4 template (needs PDK_ROOT, TT_TOOLS)
 #   make asm      assemble all firmware listings
+
+# Target process: IHP CMOS5L (ihp-sg13cmos5l). PDK=ihp-sg13g2 is also supported.
+PDK ?= ihp-sg13cmos5l
+export PDK
 
 SRC = src/tt_um_protocol_engine.v src/pesm_core.v src/pesm_host.v src/pesm_fifo.v src/pesm_clkdiv.v src/pesm_sync.v
 
@@ -27,13 +31,8 @@ synth:
 	./synth/run_synth.sh
 
 gl: synth
-	./synth/make_gl_models.sh synth/gl_models/ihp-sg13g2/libs.ref/sg13g2_stdcell/verilog
-	mkdir -p synth/gl_models/ihp-sg13g2/libs.ref/sg13g2_io/verilog
-	cp $(PDK_ROOT)/ihp-sg13g2/libs.ref/sg13g2_io/verilog/sg13g2_io.v synth/gl_models/ihp-sg13g2/libs.ref/sg13g2_io/verilog/
-	mv synth/gl_models/ihp-sg13g2/libs.ref/sg13g2_stdcell/verilog/sg13g2_stdcell_functional.v \
-	   synth/gl_models/ihp-sg13g2/libs.ref/sg13g2_stdcell/verilog/sg13g2_stdcell.v
 	cp synth/netlist_typ.v test/gate_level_netlist.v
-	cd test && $(MAKE) clean && $(MAKE) GATES=yes PDK_ROOT=$(CURDIR)/synth/gl_models
+	cd test && $(MAKE) clean && $(MAKE) GATES=yes PDK=$(PDK) PDK_ROOT=$(PDK_ROOT)
 	python3 -m cocotb_tools.check_results test/results.xml
 
 pnr:
