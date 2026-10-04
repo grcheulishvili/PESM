@@ -52,26 +52,31 @@ step).
 
 ## 3. Result with A + B + C
 
-Local replay of the Tiny Tapeout flow with the final `src/config.json`
-(`pnr/reports/v3-local/`); the CI run on this revision is still to be done.
+Tiny Tapeout `gds` CI run on commit 359f960 (`ci-results/cmos5l-359f960/`)
+and local replays of the same flow with the final `src/config.json`
+(`pnr/reports/v3-local/`).
 
-| | v2, CI (template config) | v2, local replay (final config) | v3, local replay (final config) |
-|---|---|---|---|
-| Setup slack typ / slow / fast | +4.26 / **−5.23** / +9.80 ns | +10.41 / +4.81 / +13.66 ns | +10.27 / **+4.68** / +13.53 ns |
-| Hold slack typ / slow / fast | +0.29 / +0.61 / +0.11 ns | +0.31 / +0.66 / +0.12 ns | +0.34 / +0.69 / +0.14 ns |
-| Slew violations (slow corner) | 31 | 0 | 0 |
-| Routing DRC / antenna violations | 0 / 0 | 0 / 0 | 0 / 0 |
-| Cells, area, utilization | 10 215, 152 010 µm², 16.8 % | 10 347, 154 059 µm², 17.1 % | 11 925, 211 053 µm², 23.4 % |
-| Routed wirelength | 616 mm | 669 mm | 669 mm |
-| Detailed routing | 34 iterations, 2 h 43 min (CI runner) | 5 iterations, 16 min (2 cores) | 6 iterations, 13 min (2 cores) |
-| Magic DRC / LVS / precheck | clean | not run locally | not run locally |
+| | v2, CI (template config) | v2, local replay (final config) | v3, local replay (final config) | **v3, CI (final config)** |
+|---|---|---|---|---|
+| Setup slack typ / slow / fast | +4.26 / **−5.23** / +9.80 ns | +10.41 / +4.81 / +13.66 ns | +10.27 / +4.68 / +13.53 ns | +10.57 / **+5.13** / +13.74 ns |
+| Hold slack typ / slow / fast | +0.29 / +0.61 / +0.11 ns | +0.31 / +0.66 / +0.12 ns | +0.34 / +0.69 / +0.14 ns | +0.33 / +0.68 / **+0.13** ns |
+| Slew violations (slow corner) | 31 | 0 | 0 | 0 |
+| Routing DRC / antenna violations | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| Cells, area, utilization | 10 215, 152 010 µm², 16.8 % | 10 347, 154 059 µm², 17.1 % | 11 925, 211 053 µm², 23.4 % | 11 932, 211 497 µm², 23.4 % |
+| Routed wirelength | 616 mm | 669 mm | 669 mm | 678 mm |
+| Detailed routing | 34 iterations, 2 h 43 min (CI runner) | 5 iterations, 16 min (2 cores) | 6 iterations, 13 min (2 cores) | 28 min (CI runner) |
+| Magic DRC / LVS / precheck | clean | not run locally | not run locally | **clean** (0 / 0 / all pass) |
+| Gate-level tests | 20/20 | not run | 28/28 | 28/28 |
 
 Under the same flow and configuration, A + B + C cost 0.13 ns of slow-corner
 setup slack against v2 (+4.81 → +4.68 ns). The equal total wirelength is a
 coincidence: the per-layer split differs (Metal2/3/4 = 207/376/86 mm in v2,
 241/385/44 mm in v3).
 
-The two worst slow-corner path groups in v3 are the prefetch path
+The CI run confirms the local replay: same worst path, slow-corner slack
+0.45 ns better than predicted, hold within 0.01 ns.
+
+The two worst slow-corner path groups in v3 (local run) are the prefetch path
 (instruction register → branch decision → read mux → instruction register,
 +4.68 ns) and the execute path (instruction register → shifter → ISR,
 +5.43 ns).

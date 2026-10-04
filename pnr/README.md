@@ -43,6 +43,20 @@ Checked on commit 011b2fb (the first CMOS5L CI run):
 * placement, CTS and routing differ in detail (different OpenROAD build):
   instance counts within 0.2 %, estimated wirelength within 3 %.
 
+Checked again on commit 359f960 (v3, final configuration), full flow on both
+sides:
+
+| | Local replay (F1) | CI |
+|---|---|---|
+| Setup slack typ / slow / fast | +10.27 / +4.68 / +13.53 ns | +10.57 / +5.13 / +13.74 ns |
+| Hold slack typ / slow / fast | +0.34 / +0.69 / +0.14 ns | +0.33 / +0.68 / +0.13 ns |
+| Cells, area | 11 925, 211 053 µm² | 11 932, 211 497 µm² |
+| Global-route / routed wirelength | 887 / 669 mm | 914 / 678 mm |
+| Worst slow-corner path | prefetch (branch decision → read mux tree → `instr`) | same |
+
+The replay was 0.45 ns pessimistic in the slow corner and 0.01 ns optimistic
+on hold.
+
 The pip OpenROAD build needs three workarounds, all in `shim/compat.tcl`:
 `initialize_floorplan` / `make_tracks` / `insert_tiecells` are re-implemented
 (the `ifp::` Tcl commands crash in the Python bindings; the resulting
@@ -89,6 +103,7 @@ the fast-corner hold slack after routing lands close to the post-GRT margin.
 | F1 | v3 final RTL | **final `src/config.json`** (E7 + hold margins 0.15/0.10) | **+4.68** | **+0.14** | 6 it., 13 min |
 | E9 | v3 final RTL | final without the two post-GRT repair steps | +3.30 | +0.15 | 8 it. |
 | E8 | v2 (011b2fb) | final `src/config.json` | +4.81 | +0.12 | 5 it., 16 min |
+| **CI** | **v3 (359f960)** | **final `src/config.json`** | **+5.13** | **+0.13** | 28 min |
 
 E8 is the like-for-like reference for F1: the same flow and configuration on
 the v2 RTL (10 347 cells, 154 059 µm² = 17.1 %). The v3 extensions cost
@@ -100,7 +115,20 @@ slew or capacitance violations in any corner; its reports are in
 `reports/v3-local/`.
 
 LibreLane documents the two post-global-route repair steps as experimental
-("may result in hangs and/or extended run times"). In run F1 they took 21 s
-and 41 s. If they misbehave in CI, set `RUN_POST_GRT_DESIGN_REPAIR` and
+("may result in hangs and/or extended run times"). They took 21 s and 41 s
+in run F1 and 24 s and 65 s in the CI run on 359f960. Should they misbehave
+in a later run, set `RUN_POST_GRT_DESIGN_REPAIR` and
 `RUN_POST_GRT_RESIZER_TIMING` to 0: run E9 shows the design still meets the
 3 ns target without them, with 0.3 ns instead of 1.7 ns to spare.
+
+Warnings of the CI run that are expected:
+
+* `[RSZ-0062] Unable to repair all setup violations` (post-CTS resizer): the
+  4.5 ns margin is not reachable on every endpoint at that stage; the signoff
+  numbers are what count.
+* `[EST-0026] Missing route to pin … in net …` (both post-GRT steps, more
+  than 1000 messages each): parasitic estimation from global routes found no
+  route for some pins. It affects only what the two repair steps see; signoff
+  STA uses OpenRCX parasitics of the detailed routes, and LVS is clean.
+* `klayout__drc_error__count not reported`: LibreLane does not run KLayout
+  DRC for this PDK; the Tiny Tapeout precheck does (0 violations).

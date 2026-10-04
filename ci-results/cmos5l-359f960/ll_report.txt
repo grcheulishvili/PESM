@@ -1,0 +1,29 @@
+06-yosys-synthesis                           {'cells': 8207, 'area': 162783.961}
+12-openroad-staprepnr                        {'setup_ws': -32.061, 'hold_ws': -0.109}
+13-openroad-floorplan                        {'area': 162797}
+31-openroad-stamidpnr                        {'setup_ws': -34.808, 'hold_ws': -4.609}
+32-openroad-repairdesignpostgpl              {'cells': 9678, 'area': 173702, 'est_wl': 529543}
+35-openroad-cts                              {'cells': 9970, 'area': 179187, 'est_wl': 553844}
+36-openroad-stamidpnr-1                      {'setup_ws': 6.404, 'hold_ws': -0.107}
+37-openroad-resizertimingpostcts             {'cells': 11829, 'area': 209873, 'est_wl': 573782, 'setup_buf': 24, 'hold_buf': 1835}
+38-openroad-stamidpnr-2                      {'setup_ws': 10.089, 'hold_ws': 0.359}
+39-openroad-globalrouting                    {'grt_wl': 916545}
+40-openroad-checkantennas                    {'antenna_nets': 20}
+41-openroad-repairdesignpostgrt              {'cells': 11863, 'area': 210539, 'est_wl': 578056, 'grt_wl': 912866}
+43-openroad-repairantennas                   {'cells': 11882, 'area': 210643, 'antenna_nets': 0}
+44-openroad-resizertimingpostgrt             {'cells': 11912, 'area': 211388, 'est_wl': 578844, 'grt_wl': 914184, 'setup_buf': 30, 'hold_buf': 0}
+45-openroad-stamidpnr-3                      {'setup_ws': 10.226, 'hold_ws': 0.333}
+46-openroad-detailedrouting                  {'cells': 11932, 'area': 211497, 'drt_wl': 678369, 'route_drc': 0}
+54-openroad-fillinsertion                    {'cells': 73339, 'area': 902417}
+57-openroad-stapostpnr                       {'setup_ws': 5.134, 'hold_ws': 0.131}
+
+corner                  setup ws   hold ws  slew  cap fanout
+nom_typ_1p20V_25C         10.568     0.334     0    0    142
+nom_slow_1p08V_125C        5.134     0.684     0    0    142
+nom_fast_1p32V_m40C       13.743     0.131     0    0    142
+routing DRC errors: 0   antenna violating nets: 0
+cells (no fill): 11932   area: 211497 um^2 (23.4 % of the core)   routed wirelength: 678369 um
+magic__drc_error__count: 0
+design__lvs_error__count: 0
+detailed-routing runtime: 00:28:07.310
+check (slow setup > 3.0 ns, hold > 0, route DRC 0, antenna 0): PASS

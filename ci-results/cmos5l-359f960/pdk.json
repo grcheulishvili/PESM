@@ -1,0 +1,7 @@
+{
+  "FLOW_NAME": "LibreLane",
+  "FLOW_VERSION": "3.1.0.dev3",
+  "PDK": "ihp-sg13cmos5l",
+  "PDK_SOURCE": "IHP-Open-PDK",
+  "PDK_VERSION": "2bbec755dc67ca3db0261c3d6163e15735d66710"
+}

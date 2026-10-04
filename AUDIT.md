@@ -99,12 +99,13 @@ firmware, none in v2 silicon-bound RTL):
 
 ## F. Remaining risks (not closed by this work)
 
-1. **The CMOS5L `gds` workflow has not been run on this revision.** The
-   numbers in the README come from the local replay (`pnr/README.md`): same
-   LibreLane version, scripts, configuration and Yosys as CI, a different
-   OpenROAD build, and no Magic/KLayout DRC, LVS or TT precheck. The first
-   CI run on v2 is the only CI evidence for DRC/LVS cleanliness in this
-   process; v3 uses the same cell set plus `sg13cmos5l_mux4_1` instances.
+1. **Closed: CMOS5L `gds` run on v3 (commit 359f960).** Slow-corner setup
+   +5.13 ns, fast-corner hold +0.13 ns, no slew/capacitance violations, 0
+   routing DRC, 0 Magic DRC, 0 KLayout DRC (precheck), 0 LVS errors, 0
+   antenna violations, precheck pass, RTL and gate-level tests 28/28
+   (`ci-results/cmos5l-359f960/`). The local replay had predicted +4.68 ns
+   and +0.14 ns. Fast-corner hold is the smallest margin of the design: it
+   is positive with LibreLane's 0.25 ns clock uncertainty already applied.
 2. **`src/config.json` deviates from the Tiny Tapeout template** (density,
    `LAYERS_RC`/`VIAS_R`, post-GRT repair, resizer margins). These are
    ordinary LibreLane variables, but the template asks not to edit below its

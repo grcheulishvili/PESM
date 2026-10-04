@@ -88,7 +88,7 @@ python3 tools/pesm_asm.py firmware/spi_master.pasm --spi
 
 ## Verification status
 
-Everything below was run on this exact source tree unless a row says otherwise.
+Everything below was run on the v3 sources (commit 359f960) unless a row says otherwise.
 
 | What | How | Result |
 |---|---|---|
@@ -100,9 +100,10 @@ Everything below was run on this exact source tree unless a row says otherwise.
 | Mutation check | `test/mutate.sh`: 25 injected bugs in core, host and top (branch conditions, 6-bit targets, pattern compare, background clock, prefetch/stall, write gate, read-port hand-over, read mux tree, readback register, command decode) | 25/25 caught |
 | Formal, unbounded | `make formal`: `pesm_fifo` (PDR; incl. data-ordering proof), `pesm_clkdiv` (k-induction at full 16.8 width: period ∈ {I, I+1}, exact SYNC/half phase), `pesm_host` (imem/cfg frozen outside BOOT and at the edge that ends BOOT; read port serves the core whenever it owns it), `pesm_core` (k-induction: prefetch consistency `instr == imem[pc]`, next pc = target or fall-through, branches never stall, FIFO handshake safety, pre-delayed instructions execute only on ticks, stall ⇒ pc frozen, HALT freezes pins, edge-WAIT needs an edge, autopush only at threshold, side-set isolation, `JPAT` = masked compare, background clock changes only on ticks or by `bgclk reset`) | pass |
 | Formal, bounded | top level, BMC depth 40: cross-block FIFO handshakes incl. the registered RX write never hitting a full FIFO, open drain never drives 1, background clock owns exactly its pin, `boot` is `boot_pre` delayed | pass |
-| Place & route + 3-corner STA | **local replay** of the Tiny Tapeout flow (`pnr/run_local.sh`, LibreLane 3.1.0.dev3, `src/config.json`; see `pnr/README.md` for what differs from CI). Reports: `pnr/reports/v3-local/` | setup slack +10.27 typ / **+4.68 slow** (1.08 V, 125 °C) / +13.53 fast ns; hold slack +0.34 / +0.69 / **+0.14** ns; 0 slew, 0 cap violations in all corners; **0** routing DRC; **0** antenna violations (14 diodes); 11 925 cells (1 652 flops), 211 053 µm² = 23.4 % of the core; detailed routing 6 iterations, 13 min |
-| Gate level, routed netlist | all 28 cocotb tests (directed, CRV, toolchain) on the netlist of that run, IHP CMOS5L cell models, Icarus 13 (the version the TT `gl_test` action installs) | 28/28 pass |
-| Magic/KLayout DRC, LVS, TT precheck on v3 | TT `gds` workflow | **not run** (needs CI). The v2 CMOS5L run (011b2fb) was clean: `ci-results/` |
+| **CI sign-off, v3 (359f960)** | Tiny Tapeout `gds` workflow on CMOS5L (`TinyTapeout/tt-gds-action@ihp-cmos5l`, LibreLane 3.1.0.dev3). Summaries: `ci-results/cmos5l-359f960/` | setup slack +10.57 typ / **+5.13 slow** (1.08 V, 125 °C) / +13.74 fast ns; hold slack +0.33 / +0.68 / **+0.13** ns; 0 slew, 0 cap violations in all corners; **0** routing DRC, **0** Magic DRC, **0** KLayout DRC (precheck), **0** LVS errors, **0** antenna violations; all nine precheck items pass; 11 932 cells (1 652 flops), 211 497 µm² = 23.4 % of the core; detailed routing 28 min |
+| CI tests, v3 (359f960) | `test` and `gl_test` workflows: all 28 cocotb tests (directed, CRV, toolchain) on RTL and on the routed gate-level netlist | 28/28 and 28/28 pass |
+| Place & route + 3-corner STA, local | local replay of the Tiny Tapeout flow (`pnr/run_local.sh`, same LibreLane and `src/config.json`, different OpenROAD build; see `pnr/README.md`). Reports: `pnr/reports/v3-local/` | setup +4.68 ns slow, hold +0.14 ns fast, 0 routing DRC, 0 antenna: within 0.5 ns of the CI result |
+| Gate level, local | all 28 cocotb tests on the netlist of the local run, IHP CMOS5L cell models, Icarus 13 | 28/28 pass |
 | CI, v2 (011b2fb) | Tiny Tapeout `gds` workflow on CMOS5L | DRC/LVS/antenna/precheck clean, RTL 20/20, GL 20/20; setup +4.26 typ, **−5.23 ns slow**: the reason for the configuration changes in this revision |
 
 ## Running
