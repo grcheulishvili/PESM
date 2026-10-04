@@ -30,15 +30,37 @@ Full reference: `docs/ISA.md`. Python DSL, assembler and host programmer:
 
 ## How to test
 
-1. Hold `MODE` (`ui[3]`) high (BOOT). Over the host SPI port (`ui[0]` SCK,
-   `ui[1]` MOSI, `ui[2]` CS_N, `uo[0]` MISO, mode 0, SCK ≤ 6 MHz), write the
-   config registers (`0x80` + 20 bytes) and the program (`0x00` + 64 × 2
-   bytes). `python3 tools/pesm_asm.py firmware/uart_tx.pasm --spi` prints the
-   frames. Read back with `0x40` (program) / `0xA0` (config). `0xD0` returns
-   status; its sixth byte is the chip ID `0x30`.
-2. Pull `MODE` low. The core starts at `ENTRY`.
-3. Exchange data with `0xC0` (write TX FIFO) and `0xC8` (read RX FIFO). Read
-   status with `0xD0`.
+Host SPI port (mode 0, SCK ≤ 6 MHz):
+
+| Signal | Pin |
+|---|---|
+| SCK | `ui[0]` |
+| MOSI | `ui[1]` |
+| CS_N | `ui[2]` |
+| MODE | `ui[3]` (1 = BOOT, 0 = RUN) |
+| MISO | `uo[0]` |
+
+Steps:
+
+1. **Load.** Hold `MODE` (`ui[3]`) high (BOOT). Over the host SPI port,
+   write the config registers (`0x80` + 20 bytes) and the program (`0x00` +
+   64 × 2 bytes). `python3 tools/pesm_asm.py firmware/uart_tx.pasm --spi`
+   prints the frames.
+2. **Verify.** Read back with `0x40` (program) / `0xA0` (config). `0xD0`
+   returns status; its sixth byte is the chip ID `0x30`.
+3. **Run.** Pull `MODE` low. The core starts at `ENTRY`.
+4. **Exchange data** with `0xC0` (write TX FIFO) and `0xC8` (read RX FIFO).
+   Read status with `0xD0`.
+
+| Command byte | Function |
+|---|---|
+| `0x00` | write program |
+| `0x40` | read program |
+| `0x80` | write config |
+| `0xA0` | read config |
+| `0xC0` | write TX FIFO |
+| `0xC8` | read RX FIFO |
+| `0xD0` | read status |
 
 `python3 -m pesm.run_pipeline firmware/uart_tx.pasm --backend ftdi --tx "hello"`
 does all of this through an FT232H.

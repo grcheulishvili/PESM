@@ -1,9 +1,27 @@
-# Audit of PESM v1 (`protocol_engine.zip`), resolution in v2, and the v3 / CMOS5L sign-off work
+# PESM audit
 
-Severity: **S1** breaks function/tapeout, **S2** wrong behaviour in some
-cases, **S3** hazard, area, or documentation.
-"Probe" = reproduced in simulation against the v1 RTL
-(`audit/run_probes.sh <v1>/src/tt_um_protocol_engine.v`).
+Audit of PESM v1 (`protocol_engine.zip`), its resolution in v2, and the
+v3 / CMOS5L sign-off work.
+
+## Contents
+
+| Section | Topic |
+|---|---|
+| [A](#a-input-specification-conflict-resolved-the-interface-map-was-chosen) | Input specification conflict |
+| [B](#b-v1-rtl-defects) | v1 RTL defects |
+| [C](#c-items-in-correctionstxt) | Items in `corrections.txt` |
+| [D](#d-first-cmos5l-ci-run-commit-011b2fb-what-it-showed) | First CMOS5L CI run (commit 011b2fb) |
+| [E](#e-v3-changes-this-revision) | v3 changes |
+| [F](#f-remaining-risks-not-closed-by-this-work) | Remaining risks |
+
+## Legend
+
+| Term | Meaning |
+|---|---|
+| **S1** | breaks function/tapeout |
+| **S2** | wrong behaviour in some cases |
+| **S3** | hazard, area, or documentation |
+| Probe | reproduced in simulation against the v1 RTL (`audit/run_probes.sh <v1>/src/tt_um_protocol_engine.v`) |
 
 ## A. Input specification conflict (resolved: the interface map was chosen)
 
@@ -64,18 +82,22 @@ the project's own sign-off criteria (`ci-results/cmos5l-011b2fb`):
 
 | # | Finding | Evidence | Resolution |
 |---|---|---|---|
-| D1 | Slow-corner setup slack −5.23 ns (87 endpoints); 31 slow-corner slew violations. The flow still reported success: for this PDK LibreLane only fails on typical-corner violations | `55-openroad-stapostpnr/summary.rpt` | D2, D3; `timing_signoff` CI job checks the slow corner |
+| D1 | Slow-corner setup slack -5.23 ns (87 endpoints); 31 slow-corner slew violations. The flow still reported success: for this PDK LibreLane only fails on typical-corner violations | `55-openroad-stapostpnr/summary.rpt` | D2, D3; `timing_signoff` CI job checks the slow corner |
 | D2 | The CMOS5L PDK configuration has an empty `LAYERS_RC`: timing repair during placement, CTS and global routing used 9.7e-5 pF/µm and 0.39 Ω/µm, the routed design extracts at 1.7e-4 pF/µm and 1.2 Ω/µm. The resizer found "no setup violations" and inserted no setup buffers | `14-openroad-dumprcvalues`, `37-openroad-resizertimingpostcts`, SPEF vs DEF fit | `LAYERS_RC`/`VIAS_R` in `src/config.json` |
-| D3 | Routing congestion: signals use Metal2–Metal4 only (one horizontal layer). 8 883 initial detailed-routing violations, 34 iterations, 2 h 43 min; a two-pin critical net was routed 998 µm for 247 µm | `44-openroad-detailedrouting`, final DEF | placement density 60 → 40 %, post-global-route design and timing repair enabled |
-| D4 | My earlier local OpenROAD script predicted +3.42 ns for this run. It used SG13G2 layer RC values and its own flow, so it did not have D2 | — | script removed; `pnr/` now replays the real LibreLane flow (same scripts, same Yosys; extraction + STA reproduce the CI numbers exactly on the CI layout) |
+| D3 | Routing congestion: signals use Metal2-Metal4 only (one horizontal layer). 8 883 initial detailed-routing violations, 34 iterations, 2 h 43 min; a two-pin critical net was routed 998 µm for 247 µm | `44-openroad-detailedrouting`, final DEF | placement density 60 → 40 %, post-global-route design and timing repair enabled |
+| D4 | My earlier local OpenROAD script predicted +3.42 ns for this run. It used SG13G2 layer RC values and its own flow, so it did not have D2 | - | script removed; `pnr/` now replays the real LibreLane flow (same scripts, same Yosys; extraction + STA reproduce the CI numbers exactly on the CI layout) |
 
 ## E. v3 changes (this revision)
 
-Functional (ISA v3, `docs/ISA.md` section 7): 64-word instruction memory,
-pattern branch `JPAT`, background clock generator, host command re-encoding,
-chip ID. Selection rationale: `docs/FEASIBILITY.md`.
+### Functional
 
-Structural, each covered by a formal property or a directed test:
+ISA v3 (`docs/ISA.md` section 7): 64-word instruction memory, pattern branch
+`JPAT`, background clock generator, host command re-encoding, chip ID.
+Selection rationale: `docs/FEASIBILITY.md`.
+
+### Structural
+
+Each change is covered by a formal property or a directed test:
 
 | Change | Why | Check |
 |---|---|---|
@@ -84,8 +106,9 @@ Structural, each covered by a formal property or a directed test:
 | imem/cfg writes accepted only if the core stays in BOOT one more cycle (`boot & boot_pre`); the core sees MODE one cycle later than the host block | everything the core loads when it leaves BOOT (entry word, pc, pins, background clock state) is stable; replaces the v2 write bypass | formal (host): no register changes at the edge that ends BOOT; directed sweep of the MODE edge across a write (`test_write_gate_at_boot_exit`) |
 | imem read mux is an explicit tree of 4:1 muxes (`pesm_mux4.v`, library cell when the IHP library is the target) | synthesis otherwise builds 64 decoded word lines and AND-OR trees: about 6 ns of slow-corner slack and 20 % more wire | gate-level tests run on the netlist with the instantiated cells |
 
-Bugs found by the new tests while writing v3 (all in new code or new
-firmware, none in v2 silicon-bound RTL):
+### Bugs found by the new tests
+
+All in new code or new firmware, none in v2 silicon-bound RTL:
 
 * `firmware/sync_serial_tx.pasm` first version used autopull: after an idle
   period the first data bit changed at an arbitrary phase of the clock.
@@ -99,17 +122,31 @@ firmware, none in v2 silicon-bound RTL):
 
 ## F. Remaining risks (not closed by this work)
 
-1. **Closed: CMOS5L `gds` run on v3 (commit 359f960).** Slow-corner setup
-   +5.13 ns, fast-corner hold +0.13 ns, no slew/capacitance violations, 0
-   routing DRC, 0 Magic DRC, 0 KLayout DRC (precheck), 0 LVS errors, 0
-   antenna violations, precheck pass, RTL and gate-level tests 28/28
-   (`ci-results/cmos5l-359f960/`). The local replay had predicted +4.68 ns
-   and +0.14 ns. Fast-corner hold is the smallest margin of the design: it
-   is positive with LibreLane's 0.25 ns clock uncertainty already applied.
+| # | Risk | Status |
+|---|---|---|
+| 1 | CMOS5L `gds` run on v3 | **closed** (commit 359f960) |
+| 2 | `src/config.json` deviates from the Tiny Tapeout template | open |
+| 3 | Model independence | open |
+| 4 | Top-level formal is bounded | open |
+| 5 | USB | open (limitation) |
+| 6 | `READ_IMEM` in RUN returns undefined data | open (limitation) |
+| 7 | Not simulated at gate level with SDF | open |
+| 8 | Discord handle in `info.yaml` is empty | open |
+
+1. **Closed: CMOS5L `gds` run on v3 (commit 359f960).**
+   * Slow-corner setup +5.13 ns, fast-corner hold +0.13 ns, no
+     slew/capacitance violations.
+   * 0 routing DRC, 0 Magic DRC, 0 KLayout DRC (precheck), 0 LVS errors, 0
+     antenna violations, precheck pass.
+   * RTL and gate-level tests 28/28 (`ci-results/cmos5l-359f960/`).
+   * The local replay had predicted +4.68 ns and +0.14 ns.
+   * Fast-corner hold is the smallest margin of the design: it is positive
+     with LibreLane's 0.25 ns clock uncertainty already applied.
 2. **`src/config.json` deviates from the Tiny Tapeout template** (density,
    `LAYERS_RC`/`VIAS_R`, post-GRT repair, resizer margins). These are
-   ordinary LibreLane variables, but the template asks not to edit below its
-   marker line; if the shuttle rejects them, D1 returns.
+   ordinary LibreLane variables, placed above the template's "do not change
+   anything below" marker, but the template warns against editing the file
+   at all; if the shuttle rejects them, D1 returns.
 3. **Model independence.** The reference model and RTL share an author. One
    common-mode error (JPIN decoded as class A) was in both in v2 and only
    showed up in a directed protocol test. Directed tests check against
