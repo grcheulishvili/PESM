@@ -1,7 +1,7 @@
 # Copyright (c) 2026 PESM contributors
 # SPDX-License-Identifier: Apache-2.0
 """
-Cycle-accurate reference model of the PESM v2 chip (core side).
+Cycle-accurate reference model of the PESM v3 chip (core side).
 
 Written from docs/ISA.md, not from the RTL. Used by the CRV testbench
 and by pesm.emulator. The host SPI engine is not
@@ -35,7 +35,7 @@ def _par8(v: int) -> int:
 
 class PESMModel:
     def __init__(self, imem: List[int], cfg: List[int], tx_fifo: List[int] | None = None):
-        assert len(imem) == 32 and len(cfg) == 16
+        assert len(imem) == 64 and len(cfg) == 20
         self.imem = list(imem)
         self.cfg = list(cfg)
         self.tx = list(tx_fifo or [])
@@ -44,6 +44,7 @@ class PESMModel:
         # synchronizers (model starts from steady pads)
         self.s1_mode = 1
         self.s2_mode = 1
+        self.s3_mode = 1         # the core's boot: synchronized MODE + 1 cycle
         self.s1_tin = 0
         self.s2_tin = 0
         self.s1_bio = 0
@@ -115,8 +116,39 @@ class PESMModel:
     def crc_poly(self):
         return self.cfg[11] | (self.cfg[12] << 8)
 
+    @property
+    def pat_mask(self):
+        return self.cfg[16]
+
+    @property
+    def pat_val(self):
+        return self.cfg[17]
+
+    @property
+    def bg_pin(self):
+        return self.cfg[18] & 15
+
+    @property
+    def bg_en(self):
+        return (self.cfg[18] >> 4) & 1
+
+    @property
+    def bg_auto(self):
+        return (self.cfg[18] >> 5) & 1
+
+    @property
+    def bg_idle(self):
+        return (self.cfg[18] >> 6) & 1
+
+    @property
+    def bg_div(self):
+        return self.cfg[19]
+
     def _core_reset(self):
-        self.pc = self.cfg[9] & 31
+        self.pc = self.cfg[9] & 63
+        self.bg_run = self.bg_auto
+        self.bg_q = self.bg_idle
+        self.bg_cnt = self.bg_div
         self.x = 0
         self.y = 0
         self.isr = 0
@@ -136,15 +168,22 @@ class PESMModel:
     # ------------------------------------------------------------------
     # outputs
     # ------------------------------------------------------------------
+    def out_pad(self) -> int:
+        """OUT as seen at the pads: the background clock replaces its pin."""
+        o = self.out
+        if self.bg_en and self.bg_pin != 15:
+            o = (o & ~(1 << self.bg_pin)) | (self.bg_q << self.bg_pin)
+        return o
+
     def uio_out(self) -> int:
-        return (self.out & 0xFF) & ~self.od & 0xFF
+        return (self.out_pad() & 0xFF) & ~self.od & 0xFF
 
     def uio_oe(self) -> int:
-        return self.oe & ~(self.od & self.out & 0xFF) & 0xFF
+        return self.oe & ~(self.od & self.out_pad() & 0xFF) & 0xFF
 
     def uo_out_hi(self) -> int:
         """uo_out[7:1] (uo_out[0] is MISO, not modelled)."""
-        return ((self.out >> 8) & 0x7F) << 1
+        return ((self.out_pad() >> 8) & 0x7F) << 1
 
     def pad(self, ext: int) -> int:
         oe = self.uio_oe()
@@ -157,7 +196,7 @@ class PESMModel:
         txne = 1 if self.tx else 0
         rxnf = 0 if self._rx_full() else 1
         return (self.s2_bio | (self.s2_tin << 8) | (txne << 12) | (rxnf << 13)
-                | (self.hflag << 14)) & 0xFFFF
+                | (self.hflag << 14) | (self.bg_q << 15)) & 0xFFFF
 
     def _rx_full(self) -> bool:
         return len(self.rx) + (self.rx_pending is not None) >= 8
@@ -186,7 +225,7 @@ class PESMModel:
     # one clock edge
     # ------------------------------------------------------------------
     def step(self, ui_in: int, uio_ext: int, hflag_set: int = 0, hflag_clr_host: int = 0):
-        boot = self.s2_mode
+        boot = self.s3_mode
         in_vec = self._in_vec()
         tick = self._tick(boot)
         pads = self.pad(uio_ext)
@@ -195,6 +234,8 @@ class PESMModel:
         hclr_core = 0
         tx_pop = 0
         rx_push = None
+        self._bg_ctl = None      # (run, reset) when a BGCLK instruction executes
+        bg_run_pre, bg_q_pre, bg_cnt_pre = self.bg_run, self.bg_q, self.bg_cnt
 
         if boot:
             self._core_reset()
@@ -203,7 +244,7 @@ class PESMModel:
             if run:
                 w = self.imem[self.pc]
                 op = (w >> 12) & 0xF
-                class_a = op <= 7 and op != 2
+                class_a = (op <= 7 and op != 2) or op == 9
                 sc = self.side_count
                 tail = w & 0xF
                 dly = (tail & ((1 << (4 - sc)) - 1)) if class_a else 0
@@ -225,10 +266,26 @@ class PESMModel:
                         self.dl_active = 0
                         if taken:
                             self.pc = tgt
-                        elif self.pc == (self.cfg[7] & 31):
-                            self.pc = self.cfg[8] & 31
+                        elif self.pc == (self.cfg[7] & 63):
+                            self.pc = self.cfg[8] & 63
                         else:
-                            self.pc = (self.pc + 1) & 31
+                            self.pc = (self.pc + 1) & 63
+
+            # background clock (state before this edge; instruction wins on reset)
+            if bg_run_pre and tick:
+                if bg_cnt_pre == 0:
+                    self.bg_q = bg_q_pre ^ 1
+                    self.bg_cnt = self.bg_div
+                    self.cov["bg.toggle"] += 1
+                    if self.bg_en and self.bg_pin != 15:
+                        self.cov["bg.pin"] += 1
+                else:
+                    self.bg_cnt = bg_cnt_pre - 1
+            if self._bg_ctl is not None:
+                self.bg_run = self._bg_ctl[0]
+                if self._bg_ctl[1]:
+                    self.bg_q = self.bg_idle
+                    self.bg_cnt = self.bg_div
 
         # in_prev registers in_vec every cycle
         self.in_prev = in_vec
@@ -268,7 +325,7 @@ class PESMModel:
             self.div_cnt -= 1
 
         # synchronizers
-        self.s2_mode, self.s1_mode = self.s1_mode, (ui_in >> 3) & 1
+        self.s3_mode, self.s2_mode, self.s1_mode = self.s2_mode, self.s1_mode, (ui_in >> 3) & 1
         self.s2_tin, self.s1_tin = self.s1_tin, (ui_in >> 4) & 0xF
         self.s2_bio, self.s1_bio = self.s1_bio, pads
 
@@ -277,7 +334,7 @@ class PESMModel:
         c = self.cov
         sub = {0: (w >> 8) & 15, 1: (w >> 9) & 7, 3: (w >> 4) & 15, 4: (w >> 9) & 7,
                5: (w >> 9) & 7, 6: (w >> 6) & 3, 7: (w >> 9) & 7, 8: (w >> 8) & 15,
-               9: (w >> 10) & 3}.get(op, 0)
+               9: (w >> 9) & 7, 10: (w >> 10) & 3, 11: (w >> 10) & 3}.get(op, 0)
         c[f"op{op:x}.{sub}"] += 1
         if stall:
             c[f"stall.op{op:x}"] += 1
@@ -365,9 +422,11 @@ class PESMModel:
                     isr, isr_cnt = 0, 0
                 if a5:
                     osr, osr_cnt = 0, 32
-        elif op == 1:  # JMP
+            elif f == 8:
+                self._bg_ctl = (a4, a5)
+        elif op in (1, 9):  # JMP (op 9: target + 32)
             c = (w >> 9) & 7
-            tgt = (w >> 4) & 31
+            tgt = ((w >> 4) & 31) | (32 if op == 9 else 0)
             if c == 0:
                 taken = 1
             elif c == 1:
@@ -387,8 +446,17 @@ class PESMModel:
             else:
                 taken = lb == 1
         elif op == 2:  # JPIN
-            tgt = w & 31
+            tgt = w & 63
             taken = _bit(in_vec, (w >> 8) & 15) == (w >> 7) & 1
+        elif op == 11:  # JPAT
+            tgt = w & 63
+            base = (w >> 6) & 15
+            win = 0
+            for k in range(8):
+                win |= _bit(in_vec, (base + k) & 15) << k
+            exp = x if (w >> 11) & 1 else self.pat_val
+            match = ((win ^ exp) & self.pat_mask) == 0
+            taken = match != bool((w >> 10) & 1)
         elif op == 3:  # WAIT
             p = (w >> 8) & 15
             pol, edge = (w >> 7) & 1, (w >> 6) & 1
@@ -500,7 +568,7 @@ class PESMModel:
             elif dst == 6:
                 out = (out & 0xFF) | ((r & 0x7F) << 8)
             else:
-                taken, tgt = 1, r & 31
+                taken, tgt = 1, r & 63
         elif op == 8:  # ALU
             dsty = (w >> 11) & 1
             f = (w >> 8) & 7
@@ -521,7 +589,7 @@ class PESMModel:
                     y = r
                 else:
                     x = r
-        elif op == 9:  # DLY
+        elif op == 10:  # DLY
             n = ((x << 8) | y) if (w >> 10) & 1 else (w & 0x3FF)
             ticks = (w >> 11) & 1
             if not self.dl_active:

@@ -25,6 +25,33 @@ jobs:
       - name: Run Tiny Tapeout Precheck
         uses: TinyTapeout/tt-gds-action/precheck@ihp-cmos5l
 
+  # LibreLane only fails the flow on typical-corner violations. PESM is
+  # signed off at the slow corner too: > 3 ns setup slack at 1.08 V / 125 C,
+  # positive hold slack in every corner, no routing DRC or antenna errors.
+  timing_signoff:
+    needs: gds
+    runs-on: ubuntu-24.04
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v6
+
+      - name: Download GDS logs
+        uses: actions/download-artifact@v7
+        with:
+          name: GDS_logs
+          path: gds_logs
+
+      - name: Three-corner timing sign-off
+        shell: bash
+        run: |
+          set -o pipefail
+          {
+            echo '### Three-corner timing sign-off'
+            echo '```'
+            python3 pnr/ll_report.py gds_logs/runs/wokwi --check 3.0
+            echo '```'
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+
   gl_test:
     needs: gds
     runs-on: ubuntu-24.04

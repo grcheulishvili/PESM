@@ -3,16 +3,18 @@
 #   make test     cocotb directed + constrained-random + toolchain (RTL)
 #   make sw-test  pytest of the Python toolchain (no simulator)
 #   make formal   SymbiYosys proofs
+#   make mutate   mutation check of the test suites (about 40 min)
 #   make synth    pre-layout synthesis + ABC timing (needs PDK_ROOT; PDK=ihp-sg13cmos5l default)
 #   make gl       gate-level cocotb on the yosys netlist (needs PDK_ROOT, Icarus >= 13)
-#   make pnr      OpenROAD place/route/STA on the TT 6x4 template (needs PDK_ROOT, TT_TOOLS)
+#   make pnr      local replay of the Tiny Tapeout LibreLane flow up to 3-corner STA
+#                 (needs PDK_ROOT, TT_TOOLS; run pnr/setup.sh once)
 #   make asm      assemble all firmware listings
 
 # Target process: IHP CMOS5L (ihp-sg13cmos5l). PDK=ihp-sg13g2 is also supported.
 PDK ?= ihp-sg13cmos5l
 export PDK
 
-SRC = src/tt_um_protocol_engine.v src/pesm_core.v src/pesm_host.v src/pesm_fifo.v src/pesm_clkdiv.v src/pesm_sync.v
+SRC = src/tt_um_protocol_engine.v src/pesm_core.v src/pesm_host.v src/pesm_fifo.v src/pesm_clkdiv.v src/pesm_sync.v src/pesm_mux4.v
 
 lint:
 	verilator --lint-only -Wall --top-module tt_um_protocol_engine $(SRC)
@@ -27,6 +29,9 @@ sw-test:
 formal:
 	cd formal && $(MAKE)
 
+mutate:
+	./test/mutate.sh
+
 synth:
 	./synth/run_synth.sh
 
@@ -36,9 +41,10 @@ gl: synth
 	python3 -m cocotb_tools.check_results test/results.xml
 
 pnr:
-	./pnr/run_pnr.sh
+	./pnr/run_local.sh local
+	python3 pnr/ll_report.py pnr/out/local/runs/local --check 3.0
 
 asm:
 	@for f in firmware/*.pasm; do echo "== $$f"; python3 tools/pesm_asm.py $$f || exit 1; done
 
-.PHONY: lint test sw-test formal synth gl pnr asm
+.PHONY: lint test sw-test formal mutate synth gl pnr asm

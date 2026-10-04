@@ -4,8 +4,8 @@
 Toolchain on the real design (black-box, RTL and gate level):
   * pesm.programmer / pesm.run_pipeline driving the SPI host port through a
     cocotb-backed Transport (the same code that drives an FT232H),
-  * Python-DSL macros (UART TX byte, SPI transfer, I2C read) checked
-    against protocol-level device models.
+  * Python-DSL macros (UART TX byte, SPI transfer, I2C read, USB LS token)
+    checked against protocol-level device models.
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ class CocotbTransport(Transport):
     def set_mode(self, boot: bool) -> None:
         async def _m():
             self.h.set_ui_bit(3, int(boot))
-            await ClockCycles(self.h.dut.clk, 4)
+            await ClockCycles(self.h.dut.clk, 6)
         resume(_m)()
 
     def delay(self, seconds: float) -> None:
@@ -240,3 +240,46 @@ async def test_dsl_i2c_read_macro(dut):
     assert ("mack", False) in dev.log                 # master NACKs the last byte
     assert (await h.status())["halted"] == 1
     assert await h.read_rx(1) == [0xB6]
+
+
+@cocotb.test()
+async def test_dsl_usb_ls_token_macro(dut):
+    """macro_usb_ls_token: three compile-time tokens in one 64-word program,
+    decoded by the independent NRZI / de-stuff / EOP receiver of test.py and
+    checked against the USB CRC5."""
+    from test import USBLSDecoder, _bits_lsb, crc5_usb_ref
+    from pesm import usb
+
+    h = PESM(dut)
+    await h.start()
+    tokens = [("setup", 0x15, 0xE), ("in", 0x7F, 0xF)]    # sw/examples/usb_ls_token.py
+    from pesm.run_pipeline import compile_source
+    img = compile_source(os.path.join(EXAMPLES, "usb_ls_token.py"))
+    assert 32 < img.length <= 64, "needs the 64-word memory"
+    period = img.config.tick_period()
+    await h.load(img)
+    await h.control(0x08)                       # HFLAG_CLR
+    await h.run()
+    dec = USBLSDecoder(dut, h)
+    cocotb.start_soon(dec.run())
+    await ClockCycles(dut.clk, 100)
+    await h.control(0x04)                       # HFLAG_SET: go
+    await ClockCycles(dut.clk, int(period * 100))
+    dec.stop = True
+    st = await h.status()
+    assert st["halted"] == 1 and st["err"] == 0
+
+    pkts = dec.packets(period)
+    assert len(pkts) == len(tokens), pkts
+    for pk, (pid, addr, endp) in zip(pkts, tokens):
+        d = pk["data"]
+        assert d == usb.token_packet(pid, addr, endp), [hex(b) for b in d]
+        assert pk["eop_ok"] and not pk["stuff_err"] and pk["trailing_bits"] == 0, pk
+        assert pk["max_grid_err"] < 1.0, pk
+        # receiver-side check, independent of pesm.usb
+        assert d[0] == 0x80 and (d[1] & 0xF) == (~d[1] >> 4) & 0xF
+        assert (d[2] & 0x7F, (d[2] >> 7) | ((d[3] & 7) << 1)) == (addr, endp)
+        assert (d[3] >> 3) == crc5_usb_ref(_bits_lsb(d[2:4], 11))
+    dut._log.info(f"USB LS token macro: {img.length} words, grid error <= "
+                  f"{max(pk['max_grid_err'] for pk in pkts):.2f} clk")
+

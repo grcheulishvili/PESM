@@ -77,7 +77,7 @@ class PESM:
     # ------------------------------------------------------------------
     async def boot(self):
         self.set_ui_bit(UI_MODE, 1)
-        await ClockCycles(self.dut.clk, 4)
+        await ClockCycles(self.dut.clk, 6)
 
     async def run(self):
         self.set_ui_bit(UI_MODE, 0)
@@ -131,14 +131,14 @@ class PESM:
         return r[1:]
 
     async def status(self) -> dict:
-        r = await self.xfer([asm.CMD_READ_STAT, 0, 0, 0, 0, 0])
-        s0, s1, pc, x, y = r[1:6]
+        r = await self.xfer(asm.frame_status())
+        s0, s1, pc, x, y, cid = r[1:7]
         return {
             "running": (s0 >> 7) & 1, "halted": (s0 >> 6) & 1, "irq": (s0 >> 5) & 1,
             "err": (s0 >> 4) & 1, "tx_ovf": (s0 >> 3) & 1, "rx_ovf": (s0 >> 2) & 1,
             "rx_unf": (s0 >> 1) & 1, "hflag": s0 & 1,
             "tx_level": s1 >> 4, "rx_level": s1 & 15, "pc": pc, "x": x, "y": y,
-            "raw0": r[0],
+            "id": cid, "raw0": r[0],
         }
 
     async def control(self, bits: int):
@@ -148,9 +148,9 @@ class PESM:
         await self.boot()
         await self.write_cfg(0, prog.cfg)
         await self.write_imem(0, prog.words)
-        rb = await self.read_imem(0, 32)
+        rb = await self.read_imem(0, asm.IMEM_DEPTH)
         assert rb == prog.words, f"imem readback mismatch {rb} != {prog.words}"
-        rc = await self.read_cfg(0, 16)
+        rc = await self.read_cfg(0, asm.NUM_CFG)
         assert rc == prog.cfg, f"cfg readback mismatch {rc} != {prog.cfg}"
 
     # ------------------------------------------------------------------

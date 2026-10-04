@@ -9,16 +9,17 @@
  * Frame: CS_N low, byte 0 = command, then data bytes, MSB first.
  * MISO returns STATUS0 during the command byte.
  *
- *   cmd[7:5]  name        data phase
- *   000 aaaaa WRITE_IMEM  {hi, lo} pairs -> imem[a++]        (BOOT only)
- *   001 aaaaa READ_IMEM   MISO: hi, lo of imem[a++] ...
- *   010 -aaaa WRITE_CFG   bytes -> cfg[a++]                  (BOOT only)
- *   011 -aaaa READ_CFG    MISO: cfg[a++] ...
- *   100 ----- WRITE_TX    bytes -> TX FIFO (full: dropped, TX_OVF)
- *   101 ----- READ_RX     MISO: RX FIFO bytes (empty: 0x00, RX_UNF)
- *   110 ----- READ_STAT   MISO: STATUS0, STATUS1, PC, X, Y, 0...
- *   111 fffff CONTROL     f0 FLUSH_TX, f1 FLUSH_RX, f2 HFLAG_SET,
- *                         f3 HFLAG_CLR, f4 CLR_FLAGS (no data phase)
+ *   cmd        name        data phase
+ *   00 aaaaaa  WRITE_IMEM  {hi, lo} pairs -> imem[a++]        (BOOT only)
+ *   01 aaaaaa  READ_IMEM   MISO: hi, lo of imem[a++] ...             (BOOT only)
+ *   100 aaaaa  WRITE_CFG   bytes -> cfg[a++]                  (BOOT only)
+ *   101 aaaaa  READ_CFG    MISO: cfg[a++] ...
+ *   110 00---  WRITE_TX    bytes -> TX FIFO (full: dropped, TX_OVF)
+ *   110 01---  READ_RX     MISO: RX FIFO bytes (empty: 0x00, RX_UNF)
+ *   110 10---  READ_STAT   MISO: STATUS0, STATUS1, PC, X, Y, ID, 0...
+ *   110 11---  reserved    (ignored)
+ *   111 fffff  CONTROL     f0 FLUSH_TX, f1 FLUSH_RX, f2 HFLAG_SET,
+ *                          f3 HFLAG_CLR, f4 CLR_FLAGS (no data phase)
  *
  * SCK must satisfy t_high, t_low >= 4 clk periods (f_SCK <= f_clk/8).
  * A pop of the RX FIFO is committed on the first SCK rising edge of the
@@ -36,11 +37,12 @@ module pesm_host (
     input  wire        csn,          // synchronized
     output wire        miso,
 
-    input  wire        boot,
+    input  wire        boot,         // core is held in BOOT this cycle
+    input  wire        boot_pre,     // value boot takes in the next cycle
 
-    input  wire [4:0]  core_pc,      // architectural pc (status only)
-    input  wire [4:0]  fetch_pc,     // core prefetch address
-    output wire [15:0] core_instr,   // imem[fetch_pc], with write bypass
+    input  wire [5:0]  core_pc,      // architectural pc (status only)
+    input  wire [5:0]  rd_pc,        // core prefetch address
+    output wire [15:0] rd_instr,     // imem[rd_pc] (for the core: valid when !boot or !boot_pre)
 
     output wire [15:0] cfg_div_int,
     output wire [7:0]  cfg_div_frac,
@@ -53,14 +55,21 @@ module pesm_host (
     output wire [2:0]  cfg_side_count,
     output wire        cfg_side_pindir,
     output wire [3:0]  cfg_side_base,
-    output wire [4:0]  cfg_wrap_top,
-    output wire [4:0]  cfg_wrap_bot,
-    output wire [4:0]  cfg_entry,
+    output wire [5:0]  cfg_wrap_top,
+    output wire [5:0]  cfg_wrap_bot,
+    output wire [5:0]  cfg_entry,
     output wire [7:0]  cfg_od_mask,
     output wire [15:0] cfg_crc_poly,
     output wire [7:0]  cfg_init_bio_out,
     output wire [7:0]  cfg_init_bio_oe,
     output wire [6:0]  cfg_init_tout,
+    output wire [7:0]  cfg_pat_mask,
+    output wire [7:0]  cfg_pat_val,
+    output wire [3:0]  cfg_bg_pin,
+    output wire        cfg_bg_en,
+    output wire        cfg_bg_auto,
+    output wire        cfg_bg_idle,
+    output wire [7:0]  cfg_bg_div,
 
     output reg         tx_push,
     output reg  [7:0]  tx_wdata,
@@ -88,17 +97,51 @@ module pesm_host (
 );
 
     // ------------------------------------------------------------------
-    // Instruction memory (32 x 16 flop array). Reset content = HALT.
+    // Instruction memory (64 x 16 flop array). Reset content = HALT.
+    // One read port, shared in time:
+    //   running, and the last BOOT cycle : core prefetch (rd_pc)
+    //   BOOT                             : host readback (addr)
     // ------------------------------------------------------------------
     localparam [15:0] INSTR_HALT = 16'h0100;
+    localparam [7:0]  CHIP_ID    = 8'h30;      // PESM ISA 3.0
 
-    reg [15:0] imem [0:31];
+    reg [15:0] imem [0:63];
     wire        imem_we;
-    wire [4:0]  imem_wa;
+    wire [5:0]  imem_wa;
     wire [15:0] imem_wd;
-    // bypass: a write landing in the same cycle as the core's (BOOT-time)
-    // prefetch of that address must be seen by the prefetch register
-    assign core_instr = (imem_we && imem_wa == fetch_pc) ? imem_wd : imem[fetch_pc];
+
+    // 64:1 read mux as an explicit three-level tree of 4:1 muxes that select
+    // on the address bits directly (see pesm_mux4.v).
+    wire [5:0]  rd_addr;
+    wire [15:0] rd_l1 [0:15];
+    wire [15:0] rd_l2 [0:3];
+    genvar gb, gw;
+    generate
+        for (gb = 0; gb < 16; gb = gb + 1) begin : g_rd
+            for (gw = 0; gw < 16; gw = gw + 1) begin : g_l1
+                pesm_mux4 u_m (
+                    .d({imem[4*gw+3][gb], imem[4*gw+2][gb], imem[4*gw+1][gb], imem[4*gw][gb]}),
+                    .s(rd_addr[1:0]), .y(rd_l1[gw][gb])
+                );
+            end
+            for (gw = 0; gw < 4; gw = gw + 1) begin : g_l2
+                pesm_mux4 u_m (
+                    .d({rd_l1[4*gw+3][gb], rd_l1[4*gw+2][gb], rd_l1[4*gw+1][gb], rd_l1[4*gw][gb]}),
+                    .s(rd_addr[3:2]), .y(rd_l2[gw][gb])
+                );
+            end
+            pesm_mux4 u_l3 (
+                .d({rd_l2[3][gb], rd_l2[2][gb], rd_l2[1][gb], rd_l2[0][gb]}),
+                .s(rd_addr[5:4]), .y(rd_instr[gb])
+            );
+        end
+    endgenerate
+
+    // Writes to imem/cfg are accepted only while the core is in BOOT and
+    // stays there for one more cycle. Everything the core loads in BOOT
+    // (entry word, entry pc, initial pin state, background clock state) is
+    // therefore stable in its last BOOT cycle.
+    wire wr_ok = boot & boot_pre;
 
     // ------------------------------------------------------------------
     // Configuration registers
@@ -106,9 +149,11 @@ module pesm_host (
     reg [7:0] r_div_l, r_div_h, r_frac, r_side;
     reg [3:0] r_shiftctl;
     reg [4:0] r_pull, r_push;
-    reg [4:0] r_wrap_top, r_wrap_bot, r_entry;
+    reg [5:0] r_wrap_top, r_wrap_bot, r_entry;
     reg [7:0] r_od, r_crc_l, r_crc_h, r_init_out, r_init_oe;
     reg [6:0] r_init_tout;
+    reg [7:0] r_pat_mask, r_pat_val, r_bg_div;
+    reg [6:0] r_bg_ctl;
 
     assign cfg_div_int      = {r_div_h, r_div_l};
     assign cfg_div_frac     = r_frac;
@@ -129,27 +174,39 @@ module pesm_host (
     assign cfg_init_bio_out = r_init_out;
     assign cfg_init_bio_oe  = r_init_oe;
     assign cfg_init_tout    = r_init_tout;
+    assign cfg_pat_mask     = r_pat_mask;
+    assign cfg_pat_val      = r_pat_val;
+    assign cfg_bg_pin       = r_bg_ctl[3:0];
+    assign cfg_bg_en        = r_bg_ctl[4];
+    assign cfg_bg_auto      = r_bg_ctl[5];
+    assign cfg_bg_idle      = r_bg_ctl[6];
+    assign cfg_bg_div       = r_bg_div;
 
     reg [7:0] cfg_rdata;
-    reg [3:0] cfg_raddr;
+    reg [4:0] cfg_raddr;
     always @(*) begin
         case (cfg_raddr)
-            4'd0:    cfg_rdata = r_div_l;
-            4'd1:    cfg_rdata = r_div_h;
-            4'd2:    cfg_rdata = r_frac;
-            4'd3:    cfg_rdata = {4'd0, r_shiftctl};
-            4'd4:    cfg_rdata = {3'd0, r_pull};
-            4'd5:    cfg_rdata = {3'd0, r_push};
-            4'd6:    cfg_rdata = r_side;
-            4'd7:    cfg_rdata = {3'd0, r_wrap_top};
-            4'd8:    cfg_rdata = {3'd0, r_wrap_bot};
-            4'd9:    cfg_rdata = {3'd0, r_entry};
-            4'd10:   cfg_rdata = r_od;
-            4'd11:   cfg_rdata = r_crc_l;
-            4'd12:   cfg_rdata = r_crc_h;
-            4'd13:   cfg_rdata = r_init_out;
-            4'd14:   cfg_rdata = r_init_oe;
-            default: cfg_rdata = {1'b0, r_init_tout};
+            5'd0:    cfg_rdata = r_div_l;
+            5'd1:    cfg_rdata = r_div_h;
+            5'd2:    cfg_rdata = r_frac;
+            5'd3:    cfg_rdata = {4'd0, r_shiftctl};
+            5'd4:    cfg_rdata = {3'd0, r_pull};
+            5'd5:    cfg_rdata = {3'd0, r_push};
+            5'd6:    cfg_rdata = r_side;
+            5'd7:    cfg_rdata = {2'd0, r_wrap_top};
+            5'd8:    cfg_rdata = {2'd0, r_wrap_bot};
+            5'd9:    cfg_rdata = {2'd0, r_entry};
+            5'd10:   cfg_rdata = r_od;
+            5'd11:   cfg_rdata = r_crc_l;
+            5'd12:   cfg_rdata = r_crc_h;
+            5'd13:   cfg_rdata = r_init_out;
+            5'd14:   cfg_rdata = r_init_oe;
+            5'd15:   cfg_rdata = {1'b0, r_init_tout};
+            5'd16:   cfg_rdata = r_pat_mask;
+            5'd17:   cfg_rdata = r_pat_val;
+            5'd18:   cfg_rdata = {1'b0, r_bg_ctl};
+            5'd19:   cfg_rdata = r_bg_div;
+            default: cfg_rdata = 8'h00;
         endcase
     end
 
@@ -173,7 +230,7 @@ module pesm_host (
     reg [7:0]  miso_sr;
     reg        have_cmd;
     reg [2:0]  cmd_op;
-    reg [4:0]  addr;
+    reg [5:0]  addr;
     reg        phase;
     reg [7:0]  hold;
     reg [2:0]  sidx;
@@ -186,15 +243,41 @@ module pesm_host (
     wire       sck_fall  = ~sck & sck_q;
     wire [7:0] rx_byte   = {rx_sr, mosi};
     wire       byte_done = sck_rise & (bitcnt == 3'd7);
-    assign imem_we = ~csn & byte_done & have_cmd & (cmd_op == 3'b000) & phase & boot;
+    assign imem_we = ~csn & byte_done & have_cmd & (cmd_op == 3'b000) & phase & wr_ok;
     assign imem_wa = addr;
     assign imem_wd = {hold, rx_byte};
 
+    // Command decode (first byte of a frame) -> internal op
+    //   000 WRITE_IMEM 001 READ_IMEM 010 WRITE_CFG 011 READ_CFG
+    //   100 WRITE_TX   101 READ_RX   110 READ_STAT 111 CONTROL / reserved
+    reg [2:0] dec_op;
+    reg [5:0] dec_addr;
+    always @(*) begin
+        dec_addr = rx_byte[5:0];
+        casez (rx_byte[7:5])
+            3'b00?:  dec_op = 3'b000;
+            3'b01?:  dec_op = 3'b001;
+            3'b100:  begin dec_op = 3'b010; dec_addr = {1'b0, rx_byte[4:0]}; end
+            3'b101:  begin dec_op = 3'b011; dec_addr = {1'b0, rx_byte[4:0]}; end
+            3'b110:  dec_op = {1'b1, rx_byte[4:3]};
+            default: dec_op = 3'b111;
+        endcase
+    end
+
     // Byte presented on MISO for the next data byte
     reg  [7:0] tx_byte;
-    wire [15:0] imem_rd = imem[addr];
+    assign rd_addr = (boot & boot_pre) ? addr : rd_pc;
+    // Host readback is registered: the SPI side has several clk between an
+    // address change and the next MISO byte load, and the register keeps the
+    // core's prefetch path (instr -> branch decision -> read mux) out of the
+    // MISO shift register.
+    reg [15:0] imem_rd;
+    always @(posedge clk or negedge rst_n) begin
+        if (!rst_n) imem_rd <= 16'd0;
+        else        imem_rd <= rd_instr;
+    end
     always @(*) begin
-        cfg_raddr = addr[3:0];
+        cfg_raddr = addr[4:0];
         case (cmd_op)
             3'b001:  tx_byte = phase ? imem_rd[7:0] : imem_rd[15:8];
             3'b011:  tx_byte = cfg_rdata;
@@ -203,9 +286,10 @@ module pesm_host (
                 case (sidx)
                     3'd0:    tx_byte = status0;
                     3'd1:    tx_byte = status1;
-                    3'd2:    tx_byte = {3'd0, core_pc};
+                    3'd2:    tx_byte = {2'd0, core_pc};
                     3'd3:    tx_byte = st_x;
                     3'd4:    tx_byte = st_y;
+                    3'd5:    tx_byte = CHIP_ID;
                     default: tx_byte = 8'h00;
                 endcase
             end
@@ -222,7 +306,7 @@ module pesm_host (
             miso_sr   <= 8'd0;
             have_cmd  <= 1'b0;
             cmd_op    <= 3'd0;
-            addr      <= 5'd0;
+            addr      <= 6'd0;
             phase     <= 1'b0;
             hold      <= 8'd0;
             sidx      <= 3'd0;
@@ -246,16 +330,20 @@ module pesm_host (
             r_pull      <= 5'd8;
             r_push      <= 5'd8;
             r_side      <= 8'd0;
-            r_wrap_top  <= 5'd31;
-            r_wrap_bot  <= 5'd0;
-            r_entry     <= 5'd0;
+            r_wrap_top  <= 6'd63;
+            r_wrap_bot  <= 6'd0;
+            r_entry     <= 6'd0;
             r_od        <= 8'd0;
             r_crc_l     <= 8'd0;
             r_crc_h     <= 8'd0;
             r_init_out  <= 8'd0;
             r_init_oe   <= 8'd0;
             r_init_tout <= 7'd0;
-            for (i = 0; i < 32; i = i + 1) imem[i] <= INSTR_HALT;
+            r_pat_mask  <= 8'd0;
+            r_pat_val   <= 8'd0;
+            r_bg_ctl    <= 7'd0;
+            r_bg_div    <= 8'd0;
+            for (i = 0; i < 64; i = i + 1) imem[i] <= INSTR_HALT;
         end else begin
             sck_q     <= sck;
             tx_push   <= 1'b0;
@@ -294,8 +382,8 @@ module pesm_host (
                 if (byte_done) begin
                     if (!have_cmd) begin
                         have_cmd <= 1'b1;
-                        cmd_op   <= rx_byte[7:5];
-                        addr     <= rx_byte[4:0];
+                        cmd_op   <= dec_op;
+                        addr     <= dec_addr;
                         phase    <= 1'b0;
                         sidx     <= 3'd0;
                         if (rx_byte[7:5] == 3'b111) begin
@@ -314,34 +402,39 @@ module pesm_host (
                                 end else begin
                                     if (imem_we) imem[imem_wa] <= imem_wd;
                                     else         wr_err        <= 1'b1;
-                                    addr  <= addr + 5'd1;
+                                    addr  <= addr + 6'd1;
                                     phase <= 1'b0;
                                 end
                             end
                             3'b010: begin
-                                if (boot) begin
-                                    case (addr[3:0])
-                                        4'd0:  r_div_l     <= rx_byte;
-                                        4'd1:  r_div_h     <= rx_byte;
-                                        4'd2:  r_frac      <= rx_byte;
-                                        4'd3:  r_shiftctl  <= rx_byte[3:0];
-                                        4'd4:  r_pull      <= rx_byte[4:0];
-                                        4'd5:  r_push      <= rx_byte[4:0];
-                                        4'd6:  r_side      <= rx_byte;
-                                        4'd7:  r_wrap_top  <= rx_byte[4:0];
-                                        4'd8:  r_wrap_bot  <= rx_byte[4:0];
-                                        4'd9:  r_entry     <= rx_byte[4:0];
-                                        4'd10: r_od        <= rx_byte;
-                                        4'd11: r_crc_l     <= rx_byte;
-                                        4'd12: r_crc_h     <= rx_byte;
-                                        4'd13: r_init_out  <= rx_byte;
-                                        4'd14: r_init_oe   <= rx_byte;
-                                        default: r_init_tout <= rx_byte[6:0];
+                                if (wr_ok) begin
+                                    case (addr[4:0])
+                                        5'd0:  r_div_l     <= rx_byte;
+                                        5'd1:  r_div_h     <= rx_byte;
+                                        5'd2:  r_frac      <= rx_byte;
+                                        5'd3:  r_shiftctl  <= rx_byte[3:0];
+                                        5'd4:  r_pull      <= rx_byte[4:0];
+                                        5'd5:  r_push      <= rx_byte[4:0];
+                                        5'd6:  r_side      <= rx_byte;
+                                        5'd7:  r_wrap_top  <= rx_byte[5:0];
+                                        5'd8:  r_wrap_bot  <= rx_byte[5:0];
+                                        5'd9:  r_entry     <= rx_byte[5:0];
+                                        5'd10: r_od        <= rx_byte;
+                                        5'd11: r_crc_l     <= rx_byte;
+                                        5'd12: r_crc_h     <= rx_byte;
+                                        5'd13: r_init_out  <= rx_byte;
+                                        5'd14: r_init_oe   <= rx_byte;
+                                        5'd15: r_init_tout <= rx_byte[6:0];
+                                        5'd16: r_pat_mask  <= rx_byte;
+                                        5'd17: r_pat_val   <= rx_byte;
+                                        5'd18: r_bg_ctl    <= rx_byte[6:0];
+                                        5'd19: r_bg_div    <= rx_byte;
+                                        default: ;
                                     endcase
                                 end else begin
                                     wr_err <= 1'b1;
                                 end
-                                addr <= {1'b0, addr[3:0] + 4'd1};
+                                addr <= {1'b0, addr[4:0] + 5'd1};
                             end
                             3'b100: begin
                                 if (!tx_full) begin
@@ -362,10 +455,10 @@ module pesm_host (
                         miso_sr <= tx_byte;
                         case (cmd_op)
                             3'b001: begin
-                                if (phase) addr <= addr + 5'd1;
+                                if (phase) addr <= addr + 6'd1;
                                 phase <= ~phase;
                             end
-                            3'b011: addr <= {1'b0, addr[3:0] + 4'd1};
+                            3'b011: addr <= {1'b0, addr[4:0] + 5'd1};
                             3'b101: begin
                                 pend_pop <= ~rx_empty;
                                 pend_unf <=  rx_empty;
@@ -386,9 +479,16 @@ module pesm_host (
     always @(posedge clk) f_past_valid <= 1'b1;
     always @(*) if (!f_past_valid) assume (!rst_n);
 
-    // imem and cfg never change while the core runs
+    // boot is boot_pre delayed by one cycle (top level)
+    always @(posedge clk) if (f_past_valid && $past(rst_n)) assume (boot == $past(boot_pre));
+
+    // the read port belongs to the core while it runs and in its last BOOT cycle
+    always @(*) if (rst_n && (!boot || !boot_pre)) assert (rd_instr == imem[rd_pc]);
+
+    // imem and cfg never change while the core runs, nor at the edge that
+    // ends BOOT (the core's last BOOT cycle sees the final values)
     always @(posedge clk) begin
-        if (f_past_valid && rst_n && $past(rst_n) && !$past(boot)) begin
+        if (f_past_valid && rst_n && $past(rst_n) && (!$past(boot) || !boot)) begin
             assert ($stable(r_div_l));
             assert ($stable(r_div_h));
             assert ($stable(r_frac));
@@ -402,13 +502,20 @@ module pesm_host (
             assert ($stable(r_crc_l));
             assert ($stable(r_crc_h));
             assert ($stable(r_od));
+            assert ($stable(r_init_out));
+            assert ($stable(r_init_oe));
+            assert ($stable(r_init_tout));
+            assert ($stable(r_pat_mask));
+            assert ($stable(r_pat_val));
+            assert ($stable(r_bg_ctl));
+            assert ($stable(r_bg_div));
         end
     end
 
-    // imem: pick an arbitrary word, it is stable while running
-    (* anyconst *) reg [4:0] f_a;
+    // imem: pick an arbitrary word, same guarantee
+    (* anyconst *) reg [5:0] f_a;
     always @(posedge clk) begin
-        if (f_past_valid && rst_n && $past(rst_n) && !$past(boot))
+        if (f_past_valid && rst_n && $past(rst_n) && (!$past(boot) || !boot))
             assert (imem[f_a] == $past(imem[f_a]));
     end
 

@@ -10,10 +10,11 @@ bmc: aigsmt z3
 bmc: abc bmc3
 
 [script]
-read -formal pesm_sync.v pesm_fifo.v pesm_clkdiv.v pesm_core.v pesm_host.v tt_um_protocol_engine.v
+read -formal pesm_mux4.v pesm_sync.v pesm_fifo.v pesm_clkdiv.v pesm_core.v pesm_host.v tt_um_protocol_engine.v
 prep -top tt_um_protocol_engine
 
 [files]
+../src/pesm_mux4.v
 ../src/pesm_sync.v
 ../src/pesm_fifo.v
 ../src/pesm_clkdiv.v

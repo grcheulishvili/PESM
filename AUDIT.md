@@ -1,11 +1,11 @@
-# Audit of PESM v1 (`protocol_engine.zip`) and resolution in v2
+# Audit of PESM v1 (`protocol_engine.zip`), resolution in v2, and the v3 / CMOS5L sign-off work
 
 Severity: **S1** breaks function/tapeout, **S2** wrong behaviour in some
 cases, **S3** hazard, area, or documentation.
 "Probe" = reproduced in simulation against the v1 RTL
 (`audit/run_probes.sh <v1>/src/tt_um_protocol_engine.v`).
 
-## A. Input specification conflict (decision needed from you)
+## A. Input specification conflict (resolved: the interface map was chosen)
 
 `prompt.txt` §3 and `TINYTAPEOUT_24-PIN_ASIC_INTERFACE_MAP.txt` disagree on
 `ui_in[3:0]`:
@@ -56,46 +56,76 @@ matters for the board wiring.
 | Checklist contradictions | README states only what was run, with reproduction commands |
 | No random-access loader | `WRITE_IMEM`/`WRITE_CFG` take a start address; `READ_*` for readback |
 
-## D. Remaining risks (not closed by this work)
+## D. First CMOS5L CI run (commit 011b2fb): what it showed
 
-1. **Wrong PDK in the first CI run (fixed in this revision).** The scaffold
-   was built from the default branch of `ttihp-verilog-template`
-   (`ihp-sg13g2`). The competition targets **IHP CMOS5L**
-   (`ihp-sg13cmos5l`, template branch `cmos5l`). The SG13G2 CI run (commit
-   55910b7) was clean (see README), but it is not the target process. The
-   workflows, `src/config.json` and `test/Makefile` now follow the `cmos5l`
-   template. CMOS5L has Metal1-4 + TopMetal1; Tiny Tapeout limits signal
-   routing to Metal4 and puts the power straps on Metal4. Local OpenROAD
-   results on CMOS5L are in the README; the CMOS5L `gds` workflow has **not**
-   been run yet.
-2. **Gate-level CI (resolved).** The TT `gl_test` action installs
-   TinyTapeout's Icarus 13 build, which drives the IHP `delayed_*` nets. The
-   unmodified cell models pass the full suite with it (confirmed in CI on
-   SG13G2 and locally on the CMOS5L models).
-   `synth/make_gl_models.sh` is only needed with Icarus 12.
+All Tiny Tapeout checks passed (precheck, KLayout/Magic DRC, LVS, antenna,
+RTL and gate-level tests, typical-corner timing). Two things did not meet
+the project's own sign-off criteria (`ci-results/cmos5l-011b2fb`):
+
+| # | Finding | Evidence | Resolution |
+|---|---|---|---|
+| D1 | Slow-corner setup slack −5.23 ns (87 endpoints); 31 slow-corner slew violations. The flow still reported success: for this PDK LibreLane only fails on typical-corner violations | `55-openroad-stapostpnr/summary.rpt` | D2, D3; `timing_signoff` CI job checks the slow corner |
+| D2 | The CMOS5L PDK configuration has an empty `LAYERS_RC`: timing repair during placement, CTS and global routing used 9.7e-5 pF/µm and 0.39 Ω/µm, the routed design extracts at 1.7e-4 pF/µm and 1.2 Ω/µm. The resizer found "no setup violations" and inserted no setup buffers | `14-openroad-dumprcvalues`, `37-openroad-resizertimingpostcts`, SPEF vs DEF fit | `LAYERS_RC`/`VIAS_R` in `src/config.json` |
+| D3 | Routing congestion: signals use Metal2–Metal4 only (one horizontal layer). 8 883 initial detailed-routing violations, 34 iterations, 2 h 43 min; a two-pin critical net was routed 998 µm for 247 µm | `44-openroad-detailedrouting`, final DEF | placement density 60 → 40 %, post-global-route design and timing repair enabled |
+| D4 | My earlier local OpenROAD script predicted +3.42 ns for this run. It used SG13G2 layer RC values and its own flow, so it did not have D2 | — | script removed; `pnr/` now replays the real LibreLane flow (same scripts, same Yosys; extraction + STA reproduce the CI numbers exactly on the CI layout) |
+
+## E. v3 changes (this revision)
+
+Functional (ISA v3, `docs/ISA.md` section 7): 64-word instruction memory,
+pattern branch `JPAT`, background clock generator, host command re-encoding,
+chip ID. Selection rationale: `docs/FEASIBILITY.md`.
+
+Structural, each covered by a formal property or a directed test:
+
+| Change | Why | Check |
+|---|---|---|
+| Single imem read port, shared between core prefetch and host readback (BOOT only); host readback registered | v2 had two read muxes; a second 64:1 mux costs routing the process does not have | formal: `rd_instr == imem[rd_pc]` whenever the core owns the port; loader test at the minimum SCK period |
+| Branch decision taken from registers only; stall/tick logic only selects "advance or hold" | keeps the late execute logic out of the read address | formal: branches never stall; `pc` after a completed instruction is the target or the fall-through; `instr == imem[pc]` |
+| imem/cfg writes accepted only if the core stays in BOOT one more cycle (`boot & boot_pre`); the core sees MODE one cycle later than the host block | everything the core loads when it leaves BOOT (entry word, pc, pins, background clock state) is stable; replaces the v2 write bypass | formal (host): no register changes at the edge that ends BOOT; directed sweep of the MODE edge across a write (`test_write_gate_at_boot_exit`) |
+| imem read mux is an explicit tree of 4:1 muxes (`pesm_mux4.v`, library cell when the IHP library is the target) | synthesis otherwise builds 64 decoded word lines and AND-OR trees: about 6 ns of slow-corner slack and 20 % more wire | gate-level tests run on the netlist with the instantiated cells |
+
+Bugs found by the new tests while writing v3 (all in new code or new
+firmware, none in v2 silicon-bound RTL):
+
+* `firmware/sync_serial_tx.pasm` first version used autopull: after an idle
+  period the first data bit changed at an arbitrary phase of the clock.
+  Found by `test_fw_sync_serial_tx`; fixed with `pull ifempty` before the
+  edge wait.
+* The DSL guide's I2C register-read example was 66 words. Found by
+  `sw/tests/test_docs.py`; rewritten (56 words).
+* The mutation run showed that "DLYT retires without waiting for the tick"
+  was no longer caught after the CRV instruction mix changed. Added
+  `test_dly_and_dlyt_exact` and biased the CRV generator to short delays.
+
+## F. Remaining risks (not closed by this work)
+
+1. **The CMOS5L `gds` workflow has not been run on this revision.** The
+   numbers in the README come from the local replay (`pnr/README.md`): same
+   LibreLane version, scripts, configuration and Yosys as CI, a different
+   OpenROAD build, and no Magic/KLayout DRC, LVS or TT precheck. The first
+   CI run on v2 is the only CI evidence for DRC/LVS cleanliness in this
+   process; v3 uses the same cell set plus `sg13cmos5l_mux4_1` instances.
+2. **`src/config.json` deviates from the Tiny Tapeout template** (density,
+   `LAYERS_RC`/`VIAS_R`, post-GRT repair, resizer margins). These are
+   ordinary LibreLane variables, but the template asks not to edit below its
+   marker line; if the shuttle rejects them, D1 returns.
 3. **Model independence.** The reference model and RTL share an author. One
-   common-mode error (JPIN decoded as class A) was in both and only showed
-   up in a directed protocol test. Directed tests check against protocol
-   specifications (UART framing, SPI slave, I2C slave, CRC-16/USB check
-   value, CRC-5 spec vector, USB LS receiver), not against the model.
-4. **Top-level formal is bounded** (BMC depth 40). Unbounded proofs cover
-   `pesm_fifo`, `pesm_clkdiv`, `pesm_host` and `pesm_core` separately.
-5. **USB.** LS transmit is demonstrated: NRZI, stuffing, EOP, on-chip CRC5
-   and CRC16. An LS receiver with on-the-fly CRC does not fit the register
-   budget. 10BASE-T and FS USB exceed 1 instr/clk at 50 MHz.
-6. **Critical path (addressed).** The first routed run closed at +0.76 ns
-   (slow corner). The path was pc → imem 32:1 mux → decode → IN
-   shifter/autopush → RX FIFO write data, 46 levels. Three structural fixes,
-   none of which change the ISA, its cycle timing or the program-visible
-   behaviour:
-   * prefetch register `instr <= imem[next_pc]`. Formally proven:
-     `instr == imem[pc]` whenever the core runs. A host-write bypass covers a
-     write in the same cycle as the BOOT-time prefetch.
-   * registered RX FIFO write port. The core's "full" counts the pending
-     write. Formal (top-level BMC) shows the registered push never meets a
-     full FIFO. Directed test `test_rx_port_back_to_back_full`; model
-     updated.
-   * registered divider zero-detect (`zero == (cnt == 0)`, proven).
-   Routed result (OpenROAD, TT 6x4 template): setup slack +4.49 ns in the
-   slow corner (was +0.76), hold +0.12 ns in the fast corner, 0 DRC markers,
-   0 antenna violations after diode repair.
+   common-mode error (JPIN decoded as class A) was in both in v2 and only
+   showed up in a directed protocol test. Directed tests check against
+   protocol specifications (UART framing, SPI slave, I2C slave, CRC-16/USB
+   check value, CRC-5 spec vector, USB LS receiver), not against the model.
+4. **Top-level formal is bounded.** Unbounded proofs cover `pesm_fifo`,
+   `pesm_clkdiv`, `pesm_host` and `pesm_core` separately; the assumptions the
+   core proof makes about the host (configuration frozen outside BOOT, read
+   port ownership) are proved for `pesm_host`, and the one assumption the
+   host proof makes about the top level (`boot` is `boot_pre` delayed) is a
+   top-level assertion.
+5. **USB.** LS transmit is demonstrated (FIFO-fed with NRZI/stuffing/EOP, and
+   compile-time tokens). An LS receiver with on-the-fly CRC does not fit the
+   register budget. 10BASE-T and FS USB exceed 1 instr/clk at 50 MHz.
+6. **`READ_IMEM` in RUN returns undefined data** (the read port belongs to
+   the core). The emulator returns the real contents; do not rely on it.
+7. **Not simulated at gate level with SDF.** Gate-level runs use functional
+   cell models; timing rests on STA.
+8. **Discord handle in `info.yaml` is empty** (optional for Tiny Tapeout, but
+   the directive asked for it): it has to come from the author.

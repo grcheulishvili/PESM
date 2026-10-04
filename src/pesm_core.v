@@ -4,8 +4,11 @@
  *
  * pesm_core: single-issue, single-cycle protocol engine.
  *
- *  - One instruction per clk. No fetch state: imem is a flop array read
- *    combinationally at pc.
+ *  - One instruction per clk. The instruction register is prefetched from
+ *    a single imem read port. The read address (branch target or
+ *    fall-through) is decided by the branch condition alone, which depends
+ *    only on registers; the late stall/tick logic merely decides whether
+ *    the prefetched word is taken or the current one is held.
  *  - Bit timing comes from the tick grid (pesm_clkdiv). Only the 4-bit
  *    pre-delay field, DLY in tick units and WAIT ... SYNC interact with
  *    the grid; everything else runs at clk rate.
@@ -27,9 +30,9 @@ module pesm_core (
     input  wire        rst_n,
     input  wire        boot,
 
-    output wire [4:0]  pc_o,         // architectural pc (status)
-    output wire [4:0]  fetch_pc,     // imem read address = next pc
-    input  wire [15:0] fetch_instr,  // imem[fetch_pc]
+    output wire [5:0]  pc_o,         // architectural pc (status)
+    output wire [5:0]  rd_pc,        // imem read address = next pc if the instruction completes
+    input  wire [15:0] rd_instr,     // imem[rd_pc]
 
     input  wire [7:0]  bio_in,
     input  wire [3:0]  tin,
@@ -45,13 +48,18 @@ module pesm_core (
     input  wire [2:0]  cfg_side_count,
     input  wire        cfg_side_pindir,
     input  wire [3:0]  cfg_side_base,
-    input  wire [4:0]  cfg_wrap_top,
-    input  wire [4:0]  cfg_wrap_bot,
-    input  wire [4:0]  cfg_entry,
+    input  wire [5:0]  cfg_wrap_top,
+    input  wire [5:0]  cfg_wrap_bot,
+    input  wire [5:0]  cfg_entry,
     input  wire [15:0] cfg_crc_poly,
     input  wire [7:0]  cfg_init_bio_out,
     input  wire [7:0]  cfg_init_bio_oe,
     input  wire [6:0]  cfg_init_tout,
+    input  wire [7:0]  cfg_pat_mask,
+    input  wire [7:0]  cfg_pat_val,
+    input  wire        cfg_bg_auto,
+    input  wire        cfg_bg_idle,
+    input  wire [7:0]  cfg_bg_div,
 
     input  wire        tx_empty,
     input  wire [7:0]  tx_head,
@@ -67,6 +75,7 @@ module pesm_core (
 
     output reg  [14:0] out_reg,
     output reg  [7:0]  oe_reg,
+    output reg         bg_q,         // background clock level (also input pin 15)
 
     output wire        running,
     output reg         halted,
@@ -89,12 +98,14 @@ module pesm_core (
     localparam [3:0] OP_SETP = 4'h6;
     localparam [3:0] OP_MOV  = 4'h7;
     localparam [3:0] OP_ALU  = 4'h8;
-    localparam [3:0] OP_DLY  = 4'h9;
+    localparam [3:0] OP_JMPH = 4'h9;   // JMP with target[5] = 1
+    localparam [3:0] OP_DLY  = 4'hA;
+    localparam [3:0] OP_JPAT = 4'hB;
 
     // ------------------------------------------------------------------
     // Architectural state
     // ------------------------------------------------------------------
-    reg [4:0]  pc;
+    reg [5:0]  pc;
     reg [31:0] osr;
     reg [31:0] isr;
     reg [5:0]  osr_cnt;     // bits shifted out since last (auto)pull, 0..32
@@ -107,6 +118,8 @@ module pesm_core (
     reg [15:0] dl_cnt;
     reg [15:0] in_prev;
     reg [15:0] instr;       // prefetched imem[pc]
+    reg        bg_run;      // background clock generator running
+    reg [7:0]  bg_cnt;
 
     assign pc_o = pc;
 
@@ -138,13 +151,13 @@ module pesm_core (
     //   12    TX FIFO not empty
     //   13    RX FIFO not full
     //   14    host flag
-    //   15    0
+    //   15    background clock level
     // ------------------------------------------------------------------
     // The RX write port is registered: a push issued in cycle t lands in the
     // FIFO at the end of t+1. The core's notion of "full" counts that pending
     // write, so it can never overfill the FIFO.
     wire        rx_full_c = rx_full | (rx_push & (rx_level == 4'd7));
-    wire [15:0] in_vec = {1'b0, hflag, ~rx_full_c, ~tx_empty, tin, bio_in};
+    wire [15:0] in_vec = {bg_q, hflag, ~rx_full_c, ~tx_empty, tin, bio_in};
 
     // ------------------------------------------------------------------
     // Helpers
@@ -208,8 +221,8 @@ module pesm_core (
     // Decode
     // ------------------------------------------------------------------
     wire [3:0] op      = instr[15:12];
-    // class A (side-set + pre-delay tail): CTL JMP WAIT IN OUT SETP MOV
-    wire       class_a = ~op[3] & (op != OP_JPIN);
+    // class A (side-set + pre-delay tail): CTL JMP JMPH WAIT IN OUT SETP MOV
+    wire       class_a = (~op[3] & (op != OP_JPIN)) | (op == OP_JMPH);
     wire [3:0] tail    = instr[3:0];
 
     wire [2:0] sc = (cfg_side_count > 3'd4) ? 3'd4 : cfg_side_count;
@@ -243,9 +256,76 @@ module pesm_core (
     wire [7:0] isr_byte = cfg_in_right  ? isr[31:24] : isr[7:0];
     wire [7:0] osr_byte = cfg_out_right ? osr[7:0]   : osr[31:24];
 
-    wire [4:0] seq_pc = (pc == cfg_wrap_top) ? cfg_wrap_bot : (pc + 5'd1);
-    wire [4:0] pc_next;
-    assign fetch_pc = pc_next;
+    wire [5:0] seq_pc = (pc == cfg_wrap_top) ? cfg_wrap_bot : (pc + 6'd1);
+
+    // JPAT window: 8 inputs starting at pin instr[9:6]
+    wire [7:0] pat_win   = rotr16_lo8(in_vec, instr[9:6]);
+    wire [7:0] pat_exp   = instr[11] ? x : cfg_pat_val;
+    wire       pat_match = (((pat_win ^ pat_exp) & cfg_pat_mask) == 8'd0);
+
+    // ------------------------------------------------------------------
+    // MOV datapath and branch target. Pure decode of the instruction
+    // register (not gated by exec/tick), so that imem[tgt] can be read in
+    // parallel with the rest of the execute logic.
+    // ------------------------------------------------------------------
+    reg [7:0] mv_src;
+    reg [7:0] mv_res;
+    always @(*) begin
+        case (instr[6:4])
+            3'd0:    mv_src = x;
+            3'd1:    mv_src = y;
+            3'd2:    mv_src = isr_byte;
+            3'd3:    mv_src = osr_byte;
+            3'd4:    mv_src = in_vec[7:0];
+            3'd5:    mv_src = in_vec[15:8];
+            3'd6:    mv_src = 8'd0;
+            default: mv_src = {7'd0, lastbit};
+        endcase
+        case (instr[8:7])
+            2'd0:    mv_res = mv_src;
+            2'd1:    mv_res = ~mv_src;
+            2'd2:    mv_res = rev8(mv_src);
+            default: mv_res = {7'd0, ^mv_src};
+        endcase
+    end
+
+    reg [5:0] tgt;
+    always @(*) begin
+        case (op)
+            OP_JMP, OP_JMPH: tgt = {op[3], instr[8:4]};
+            OP_MOV:          tgt = mv_res[5:0];
+            default:         tgt = instr[5:0];          // JPIN, JPAT
+        endcase
+    end
+
+    // Branch decision. Branches never stall, so "taken" is a function of the
+    // instruction and of registered state only.
+    reg jcond;
+    always @(*) begin
+        case (instr[11:9])
+            3'd0:    jcond = 1'b1;
+            3'd1:    jcond = (x == 8'd0);
+            3'd2:    jcond = (x != 8'd0);
+            3'd3:    jcond = (y == 8'd0);
+            3'd4:    jcond = (y != 8'd0);
+            3'd5:    jcond = (x != y);
+            3'd6:    jcond = (osr_cnt < pull_th);
+            default: jcond = lastbit;
+        endcase
+    end
+
+    reg taken;
+    always @(*) begin
+        case (op)
+            OP_JMP, OP_JMPH: taken = jcond;
+            OP_JPIN:         taken = (in_vec[instr[11:8]] == instr[7]);
+            OP_JPAT:         taken = pat_match ^ instr[10];
+            OP_MOV:          taken = (instr[11:9] == 3'd7);     // PC <- mv_res[5:0]
+            default:         taken = 1'b0;
+        endcase
+    end
+
+    assign rd_pc = boot ? cfg_entry : (taken ? tgt : seq_pc);
 
     // ------------------------------------------------------------------
     // Execute (combinational next-state)
@@ -257,16 +337,14 @@ module pesm_core (
     reg [14:0] out_n;
     reg [7:0]  oe_n;
     reg        stall;
-    reg        taken;
     reg        rx_push_c;
     reg [7:0]  rx_wdata_c;
-    reg [4:0]  tgt;
+    reg        bg_ctl;      // BGCLK instruction executes this cycle
     reg        set_halt, set_irq, set_err, set_rxovf;
     reg        dl_active_n;
     reg [15:0] dl_cnt_n;
 
     // scratch
-    reg        cond;
     reg [5:0]  n6;
     reg [31:0] dsrc;
     reg [31:0] dm;
@@ -300,8 +378,7 @@ module pesm_core (
         out_n       = out_reg;
         oe_n        = oe_reg;
         stall       = 1'b0;
-        taken       = 1'b0;
-        tgt         = 5'd0;
+        bg_ctl      = 1'b0;
         tx_pop      = 1'b0;
         rx_push_c   = 1'b0;
         rx_wdata_c  = 8'd0;
@@ -315,7 +392,6 @@ module pesm_core (
         dl_active_n = dl_active;
         dl_cnt_n    = dl_cnt;
 
-        cond      = 1'b0;
         n6        = 6'd1;
         dsrc      = 32'd0;
         dm        = 32'd0;
@@ -399,31 +475,19 @@ module pesm_core (
                                 osr_cnt_n = 6'd32;
                             end
                         end
+                        4'h8: bg_ctl = 1'b1;               // BGCLK run/stop [reset]
                         default: ;                        // NOP / reserved
                     endcase
                 end
 
                 // ============================================================
-                OP_JMP: begin
-                    tgt = instr[8:4];
-                    case (instr[11:9])
-                        3'd0: cond = 1'b1;
-                        3'd1: cond = (x == 8'd0);
-                        3'd2: begin cond = (x != 8'd0); x_n = x - 8'd1; end
-                        3'd3: cond = (y == 8'd0);
-                        3'd4: begin cond = (y != 8'd0); y_n = y - 8'd1; end
-                        3'd5: cond = (x != y);
-                        3'd6: cond = (osr_cnt < pull_th);
-                        default: cond = lastbit;
-                    endcase
-                    taken = cond;
+                OP_JMP, OP_JMPH: begin                  // branch itself: see `taken`
+                    if (instr[11:9] == 3'd2) x_n = x - 8'd1;
+                    if (instr[11:9] == 3'd4) y_n = y - 8'd1;
                 end
 
                 // ============================================================
-                OP_JPIN: begin
-                    tgt   = instr[4:0];
-                    taken = (in_vec[instr[11:8]] == instr[7]);
-                end
+                OP_JPIN, OP_JPAT: ;                     // branch only
 
                 // ============================================================
                 OP_WAIT: begin
@@ -538,22 +602,7 @@ module pesm_core (
 
                 // ============================================================
                 OP_MOV: begin
-                    case (instr[6:4])
-                        3'd0:    v8 = x;
-                        3'd1:    v8 = y;
-                        3'd2:    v8 = isr_byte;
-                        3'd3:    v8 = osr_byte;
-                        3'd4:    v8 = in_vec[7:0];
-                        3'd5:    v8 = in_vec[15:8];
-                        3'd6:    v8 = 8'd0;
-                        default: v8 = {7'd0, lastbit};
-                    endcase
-                    case (instr[8:7])
-                        2'd0:    r8 = v8;
-                        2'd1:    r8 = ~v8;
-                        2'd2:    r8 = rev8(v8);
-                        default: r8 = {7'd0, ^v8};
-                    endcase
+                    r8 = mv_res;
                     case (instr[11:9])
                         3'd0: x_n = r8;
                         3'd1: y_n = r8;
@@ -568,10 +617,7 @@ module pesm_core (
                         3'd4: out_n[7:0]  = r8;
                         3'd5: oe_n        = r8;
                         3'd6: out_n[14:8] = r8[6:0];
-                        default: begin
-                            taken = 1'b1;
-                            tgt   = r8[4:0];
-                        end
+                        default: ;                      // PC <- mv_res[5:0], see `taken`
                     endcase
                 end
 
@@ -642,15 +688,18 @@ module pesm_core (
         end
     end
 
-    assign pc_next = boot ? cfg_entry :
-                     (exec & ~stall) ? (taken ? tgt : seq_pc) : pc;
+    // Next pc / next instruction: the prefetched word and its address are
+    // taken when the instruction completes, otherwise both are held.
+    wire        adv        = boot | (exec & ~stall);
+    wire [5:0]  pc_next    = adv ? rd_pc    : pc;
+    wire [15:0] instr_next = adv ? rd_instr : instr;
 
     // ------------------------------------------------------------------
     // State update
     // ------------------------------------------------------------------
     always @(posedge clk or negedge rst_n) begin
         if (!rst_n) begin
-            pc        <= 5'd0;
+            pc        <= 6'd0;
             x         <= 8'd0;
             y         <= 8'd0;
             osr       <= 32'd0;
@@ -673,10 +722,36 @@ module pesm_core (
             irq       <= 1'b0;
             err       <= 1'b0;
             rx_ovf    <= 1'b0;
+            bg_run    <= 1'b0;
+            bg_q      <= 1'b0;
+            bg_cnt    <= 8'd0;
         end else begin
             in_prev  <= in_vec;
-            instr    <= fetch_instr;
+            instr    <= instr_next;
             pc       <= pc_next;
+
+            // ---- background clock: toggles every (BG_DIV + 1) ticks ----
+            if (boot) begin
+                bg_run <= cfg_bg_auto;
+                bg_q   <= cfg_bg_idle;
+                bg_cnt <= cfg_bg_div;
+            end else begin
+                if (bg_run & tick) begin
+                    if (bg_cnt == 8'd0) begin
+                        bg_q   <= ~bg_q;
+                        bg_cnt <= cfg_bg_div;
+                    end else begin
+                        bg_cnt <= bg_cnt - 8'd1;
+                    end
+                end
+                if (bg_ctl) begin
+                    bg_run <= instr[4];
+                    if (instr[5]) begin
+                        bg_q   <= cfg_bg_idle;
+                        bg_cnt <= cfg_bg_div;
+                    end
+                end
+            end
             rx_push  <= rx_push_c;
             rx_wdata <= rx_wdata_c;
 
@@ -738,9 +813,10 @@ module pesm_core (
     always @(posedge clk) f_past_valid <= 1'b1;
     always @(*) if (!f_past_valid) assume (!rst_n);
 
-    // Configuration is only written while boot == 1 (enforced by pesm_host).
+    // Configuration is frozen whenever the core is out of BOOT, including the
+    // edge that ends BOOT (proved for pesm_host: its write gate is boot & boot_pre).
     always @(posedge clk) begin
-        if (f_past_valid && !boot && !$past(boot)) begin
+        if (f_past_valid && !boot) begin
             assume ($stable(cfg_div_int));
             assume ($stable(cfg_div_frac));
             assume ($stable(cfg_side_count));
@@ -754,13 +830,25 @@ module pesm_core (
             assume ($stable(cfg_side_base));
             assume ($stable(cfg_wrap_top));
             assume ($stable(cfg_wrap_bot));
+            assume ($stable(cfg_entry));
             assume ($stable(cfg_crc_poly));
+            assume ($stable(cfg_pat_mask));
+            assume ($stable(cfg_pat_val));
+            assume ($stable(cfg_bg_auto));
+            assume ($stable(cfg_bg_idle));
+            assume ($stable(cfg_bg_div));
         end
     end
 
     // imem content (write-protected while running) modelled as a constant
-    (* anyconst *) reg [511:0] f_imem;
-    always @(*) assume (fetch_instr == f_imem[{fetch_pc, 4'd0} +: 16]);
+    // The read port serves the core while it runs and in its last BOOT cycle
+    // (earlier BOOT cycles belong to the host readback).
+    (* anyconst *) reg [1023:0] f_imem;
+    always @(*) if (!boot) assume (rd_instr == f_imem[{rd_pc, 4'd0} +: 16]);
+    always @(posedge clk) begin
+        if (f_past_valid && !boot && $past(boot))
+            assume ($past(rd_instr) == f_imem[{$past(rd_pc), 4'd0} +: 16]);
+    end
     // prefetch consistency: the executing instruction is always imem[pc]
     // (the chip's MODE synchronizer resets to BOOT, so the first cycle after reset is boot)
     always @(posedge clk) if (f_past_valid && !$past(rst_n)) assume (boot);
@@ -796,8 +884,19 @@ module pesm_core (
     always @(posedge clk) begin
         if (f_past_valid && rst_n && $past(rst_n) && !$past(boot) && $past(exec) && $past(stall))
             assert (pc == $past(pc));
+        // a completed instruction goes to the branch target or falls through
+        if (f_past_valid && rst_n && $past(rst_n) && !$past(boot) && !boot && $past(exec) &&
+            !$past(stall))
+            assert (pc == ($past(taken) ? $past(tgt) : $past(seq_pc)));
         if (f_past_valid && rst_n && $past(rst_n) && !$past(boot) && !$past(exec))
             assert (pc == $past(pc));
+    end
+
+    // ---- branches never stall (the prefetch address relies on it) ----
+    always @(*) begin
+        if (rst_n && exec && (op == OP_JMP || op == OP_JMPH || op == OP_JPIN || op == OP_JPAT ||
+                              (op == OP_MOV && instr[11:9] == 3'd7)))
+            assert (!stall);
     end
 
     // ---- halted core is frozen (outputs do not change) ----
@@ -832,6 +931,27 @@ module pesm_core (
         if (rst_n && exec && op == OP_IN && rx_push_c)
             assert (cfg_autopush && (sat32(isr_cnt, n6) >= push_th));
     end
+
+    // ---- JPAT branches exactly on the masked compare ----
+    always @(*) begin
+        if (rst_n && exec && op == OP_JPAT)
+            assert (taken == ((((rotr16_lo8(in_vec, instr[9:6]) ^ (instr[11] ? x : cfg_pat_val))
+                                & cfg_pat_mask) == 8'd0) ^ instr[10]));
+    end
+
+    // ---- background clock: level only changes on a tick while running,
+    //      or by a BGCLK instruction with the reset flag; counter in range ----
+    always @(posedge clk) begin
+        if (f_past_valid && rst_n && $past(rst_n) && !$past(boot) && !boot) begin
+            if (bg_q != $past(bg_q))
+                assert (($past(bg_run) && $past(tick)) || ($past(bg_ctl) && $past(instr[5])));
+            if (!$past(bg_run) && !$past(bg_ctl)) begin
+                assert (!bg_run);
+                assert (bg_cnt == $past(bg_cnt));
+            end
+        end
+    end
+    always @(*) if (rst_n && !boot) assert (bg_cnt <= cfg_bg_div);
 
     // ---- covers ----
     always @(*) begin

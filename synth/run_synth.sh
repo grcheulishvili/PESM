@@ -12,12 +12,12 @@ SCL=${PDK#ihp-}                     # sg13cmos5l | sg13g2
 LIBDIR=$PDK_ROOT/$PDK/libs.ref/${SCL}_stdcell/lib
 TYP=$LIBDIR/${SCL}_stdcell_typ_1p20V_25C.lib
 SLOW=$LIBDIR/${SCL}_stdcell_slow_1p08V_125C.lib
-SRC="../src/tt_um_protocol_engine.v ../src/pesm_core.v ../src/pesm_host.v ../src/pesm_fifo.v ../src/pesm_clkdiv.v ../src/pesm_sync.v"
+SRC="../src/tt_um_protocol_engine.v ../src/pesm_core.v ../src/pesm_host.v ../src/pesm_fifo.v ../src/pesm_clkdiv.v ../src/pesm_sync.v ../src/pesm_mux4.v"
 
 run() {  # $1 = liberty, $2 = tag
   yosys -q -l "synth_$2.log" -p "
     read_liberty -lib $1
-    read_verilog $SRC
+    read_verilog -DSCL_${SCL}_stdcell $SRC
     synth -top tt_um_protocol_engine -flatten
     dfflibmap -liberty $1
     abc -liberty $1 -D 20000 -script +strash;&get,-n;&fraig,-x;&put;scorr;dc2;dretime;strash;&get,-n;&dch,-f;&nf,-D,20000;&put;buffer;upsize,-D,20000;dnsize,-D,20000;stime,-p

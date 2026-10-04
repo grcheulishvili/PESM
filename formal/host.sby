@@ -13,8 +13,9 @@ prove: abc pdr
 cover: smtbmc z3
 
 [script]
-read -formal pesm_host.v
+read -formal pesm_mux4.v pesm_host.v
 prep -top pesm_host
 
 [files]
+../src/pesm_mux4.v
 ../src/pesm_host.v

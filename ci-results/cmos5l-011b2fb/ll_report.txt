@@ -1,0 +1,26 @@
+06-yosys-synthesis                           {'cells': 7434, 'area': 117675.293}
+12-openroad-staprepnr                        {'setup_ws': -12.957, 'hold_ws': -0.109}
+13-openroad-floorplan                        {'area': 117706}
+31-openroad-stamidpnr                        {'setup_ws': -7.513, 'hold_ws': -0.779}
+32-openroad-repairdesignpostgpl              {'cells': 8637, 'area': 126436, 'est_wl': 431124}
+35-openroad-cts                              {'cells': 8786, 'area': 129470, 'est_wl': 444566}
+36-openroad-stamidpnr-1                      {'setup_ws': 10.356, 'hold_ws': -0.102}
+37-openroad-resizertimingpostcts             {'cells': 10142, 'area': 151613, 'est_wl': 464833, 'setup_buf': 0, 'hold_buf': 1356}
+38-openroad-stamidpnr-2                      {'setup_ws': 10.153, 'hold_ws': 0.28}
+39-openroad-globalrouting                    {'grt_wl': 866361}
+40-openroad-checkantennas                    {'antenna_nets': 57}
+42-openroad-repairantennas                   {'cells': 10208, 'area': 151972, 'antenna_nets': 0}
+43-openroad-stamidpnr-3                      {'setup_ws': 8.527, 'hold_ws': 0.292}
+44-openroad-detailedrouting                  {'cells': 10215, 'area': 152010, 'drt_wl': 615888, 'route_drc': 0}
+52-openroad-fillinsertion                    {'cells': 73859, 'area': 902417}
+55-openroad-stapostpnr                       {'setup_ws': -5.234, 'hold_ws': 0.108}
+
+corner                  setup ws   hold ws  slew  cap fanout
+nom_typ_1p20V_25C          4.263     0.286     7    0     80
+nom_slow_1p08V_125C       -5.234     0.605    31    0     80
+nom_fast_1p32V_m40C        9.800     0.108     0    0     80
+routing DRC errors: 0   antenna violating nets: 0
+cells (no fill): 10215   area: 152010 um^2 (16.8 % of the core)   routed wirelength: 615888 um
+magic__drc_error__count: 0
+design__lvs_error__count: 0
+detailed-routing runtime: 02:43:16.597

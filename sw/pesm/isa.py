@@ -1,7 +1,7 @@
 # Copyright (c) 2026 PESM contributors
 # SPDX-License-Identifier: Apache-2.0
 """
-PESM v2 instruction set: the single source of truth for encoding,
+PESM v3 instruction set: the single source of truth for encoding,
 decoding and the configuration register map. Used by the text assembler,
 the Python DSL builder, the host programmer and the test benches.
 
@@ -14,7 +14,10 @@ import json
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Union
 
-IMEM_DEPTH = 32
+IMEM_DEPTH = 64
+NUM_CFG = 20
+ISA_VERSION = 3
+CHIP_ID = 0x30            # READ_STAT byte 5
 INSTR_HALT = 0x0100
 CLK_HZ_DEFAULT = 50_000_000
 
@@ -26,10 +29,13 @@ class IsaError(ValueError):
 # ---------------------------------------------------------------------------
 # Opcodes and sub-fields
 # ---------------------------------------------------------------------------
-OP_CTL, OP_JMP, OP_JPIN, OP_WAIT, OP_IN, OP_OUT, OP_SETP, OP_MOV, OP_ALU, OP_DLY = range(10)
-CLASS_A = (OP_CTL, OP_JMP, OP_WAIT, OP_IN, OP_OUT, OP_SETP, OP_MOV)
+(OP_CTL, OP_JMP, OP_JPIN, OP_WAIT, OP_IN, OP_OUT, OP_SETP, OP_MOV, OP_ALU, OP_JMPH, OP_DLY,
+ OP_JPAT) = range(12)
+# OP_JMPH is JMP with target bit 5 set (targets 32..63)
+CLASS_A = (OP_CTL, OP_JMP, OP_WAIT, OP_IN, OP_OUT, OP_SETP, OP_MOV, OP_JMPH)
 
-CTL_NOP, CTL_HALT, CTL_IRQ, CTL_PUSH, CTL_PULL, CTL_SYNC, CTL_HCLR, CTL_CLR = range(8)
+(CTL_NOP, CTL_HALT, CTL_IRQ, CTL_PUSH, CTL_PULL, CTL_SYNC, CTL_HCLR, CTL_CLR,
+ CTL_BGCLK) = range(9)
 
 JMP_CONDS: Dict[str, int] = {"always": 0, "!x": 1, "x--": 2, "!y": 3, "y--": 4,
                              "x!=y": 5, "!osre": 6, "lb": 7}
@@ -54,13 +60,13 @@ for _i in range(7):
     PIN_ALIASES[f"tout{_i}"] = 8 + _i
 for _i in range(4):
     PIN_ALIASES[f"tin{_i}"] = 8 + _i
-PIN_ALIASES.update({"txne": 12, "rxnf": 13, "hflag": 14})
+PIN_ALIASES.update({"txne": 12, "rxnf": 13, "hflag": 14, "bgclk": 15})
 
 PinLike = Union[int, str]
 
 
 def pin_index(pin: PinLike) -> int:
-    """Resolve a pin name (bio0..7, tout0..6, tin0..3, txne, rxnf, hflag) or number."""
+    """Resolve a pin name (bio0..7, tout0..6, tin0..3, txne, rxnf, hflag, bgclk) or number."""
     if isinstance(pin, str):
         p = pin.strip().lower()
         if p in PIN_ALIASES:
@@ -114,7 +120,7 @@ def split_tail(t: int, side_count: int):
 # Encoders
 # ---------------------------------------------------------------------------
 def enc_ctl(func: int, a5: int = 0, a4: int = 0, t: int = 0) -> int:
-    _chk("ctl func", func, 0, 7)
+    _chk("ctl func", func, 0, 8)
     return (OP_CTL << 12) | (func << 8) | ((a5 & 1) << 5) | ((a4 & 1) << 4) | (t & 0xF)
 
 
@@ -152,16 +158,31 @@ def enc_clr(isr: bool = True, osr: bool = False, t: int = 0) -> int:
     return enc_ctl(CTL_CLR, int(osr), int(isr), t)
 
 
+def enc_bgclk(run: bool, reset: bool = False, t: int = 0) -> int:
+    """Background clock generator: run/stop, optionally back to idle level and full phase."""
+    return enc_ctl(CTL_BGCLK, int(reset), int(run), t)
+
+
 def enc_jmp(cond: Union[str, int], target: int, t: int = 0) -> int:
     c = JMP_CONDS[cond] if isinstance(cond, str) else _chk("jmp cond", cond, 0, 7)
     _chk("jump target", target, 0, IMEM_DEPTH - 1)
-    return (OP_JMP << 12) | (c << 9) | (target << 4) | (t & 0xF)
+    op = OP_JMPH if target >= 32 else OP_JMP
+    return (op << 12) | (c << 9) | ((target & 31) << 4) | (t & 0xF)
 
 
 def enc_jpin(pin: PinLike, level: int, target: int) -> int:
     _chk("level", level, 0, 1)
     _chk("jump target", target, 0, IMEM_DEPTH - 1)
     return (OP_JPIN << 12) | (pin_index(pin) << 8) | (level << 7) | target
+
+
+def enc_jpat(target: int, base: PinLike = 0, use_x: bool = False, invert: bool = False) -> int:
+    """Pattern branch on the 8-input window starting at `base`:
+    match = ((window ^ expected) & PAT_MASK) == 0, expected = X (use_x) or PAT_VAL.
+    Jumps on match, or on mismatch if invert."""
+    _chk("jump target", target, 0, IMEM_DEPTH - 1)
+    return ((OP_JPAT << 12) | (int(bool(use_x)) << 11) | (int(bool(invert)) << 10)
+            | (pin_index(base) << 6) | target)
 
 
 def enc_wait(pin: PinLike, kind: str, sync: Optional[str] = None, t: int = 0) -> int:
@@ -271,14 +292,19 @@ def disassemble(w: int, side_count: int = 0) -> str:
             return "sync" + (" half" if a4 else "") + suffix
         if f == CTL_CLR and 0 < a < 4:
             return "clr " + {1: "isr", 2: "osr", 3: "all"}[a] + suffix
+        if f == CTL_BGCLK and a < 4:
+            return "bgclk " + ("on" if a4 else "off") + (" reset" if a5 else "") + suffix
         return word
-    if op == OP_JMP:
-        c, tg = (w >> 9) & 7, (w >> 4) & 31
+    if op in (OP_JMP, OP_JMPH):
+        c, tg = (w >> 9) & 7, ((w >> 4) & 31) | (32 if op == OP_JMPH else 0)
         return (f"jmp {JMP_COND_NAMES[c]}, {tg}" if c else f"jmp {tg}") + suffix
     if op == OP_JPIN:
-        if (w >> 5) & 3:
+        if (w >> 6) & 1:
             return word
-        return f"jpin {(w >> 8) & 15}, {(w >> 7) & 1}, {w & 31}"
+        return f"jpin {(w >> 8) & 15}, {(w >> 7) & 1}, {w & 63}"
+    if op == OP_JPAT:
+        mn = "j" + ("n" if (w >> 10) & 1 else "") + "pat" + ("x" if (w >> 11) & 1 else "")
+        return f"{mn} {(w >> 6) & 15}, {w & 63}"
     if op == OP_WAIT:
         pol, edge, syn, half = (w >> 7) & 1, (w >> 6) & 1, (w >> 5) & 1, (w >> 4) & 1
         if half and not syn:
@@ -332,11 +358,13 @@ def disassemble(w: int, side_count: int = 0) -> str:
 CFG_NAMES = [
     "div_int_l", "div_int_h", "div_frac", "shiftctl", "pull_thresh", "push_thresh",
     "sidectl", "wrap_top", "wrap_bot", "entry", "od_mask", "crc_poly_l", "crc_poly_h",
-    "init_bio_out", "init_bio_oe", "init_tout",
+    "init_bio_out", "init_bio_oe", "init_tout", "pat_mask", "pat_val", "bgclk_ctl",
+    "bgclk_div",
 ]
-CFG_DEFAULTS = [0, 0, 0, 0x03, 8, 8, 0, 31, 0, 0, 0, 0, 0, 0, 0, 0]
-CFG_MASKS = [0xFF, 0xFF, 0xFF, 0x0F, 0x1F, 0x1F, 0xFF, 0x1F, 0x1F, 0x1F, 0xFF, 0xFF, 0xFF,
-             0xFF, 0xFF, 0x7F]
+CFG_DEFAULTS = [0, 0, 0, 0x03, 8, 8, 0, 63, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+CFG_MASKS = [0xFF, 0xFF, 0xFF, 0x0F, 0x1F, 0x1F, 0xFF, 0x3F, 0x3F, 0x3F, 0xFF, 0xFF, 0xFF,
+             0xFF, 0xFF, 0x7F, 0xFF, 0xFF, 0x7F, 0xFF]
+assert len(CFG_NAMES) == len(CFG_DEFAULTS) == len(CFG_MASKS) == NUM_CFG
 
 
 def divider_from_ratio(ratio: float):
@@ -354,7 +382,7 @@ def divider_from_ratio(ratio: float):
 
 @dataclass
 class Config:
-    """The 16 PESM configuration registers (docs/ISA.md section 5)."""
+    """The 20 PESM configuration registers (docs/ISA.md section 5)."""
     div_int: int = 0
     div_frac: int = 0
     out_right: bool = True
@@ -366,7 +394,7 @@ class Config:
     side_count: int = 0
     side_pindir: bool = False
     side_base: int = 0
-    wrap_top: int = 31
+    wrap_top: int = IMEM_DEPTH - 1
     wrap_bot: int = 0
     entry: int = 0
     od_mask: int = 0
@@ -374,6 +402,13 @@ class Config:
     init_bio_out: int = 0
     init_bio_oe: int = 0
     init_tout: int = 0
+    pat_mask: int = 0
+    pat_val: int = 0
+    bg_pin: int = 0          # output pin taken over by the background clock (if bg_en)
+    bg_en: bool = False      # 1: background clock drives bg_pin
+    bg_auto: bool = False    # 1: generator runs from program start
+    bg_idle: int = 0         # level while stopped/reset
+    bg_div: int = 0          # toggles every (bg_div + 1) ticks
 
     def to_bytes(self) -> List[int]:
         b = [
@@ -382,9 +417,13 @@ class Config:
              | (int(self.autopush) << 3)),
             self.pull_thresh & 31, self.push_thresh & 31,
             ((self.side_base & 15) << 4) | (int(self.side_pindir) << 3) | (self.side_count & 7),
-            self.wrap_top & 31, self.wrap_bot & 31, self.entry & 31, self.od_mask & 0xFF,
+            self.wrap_top & 63, self.wrap_bot & 63, self.entry & 63, self.od_mask & 0xFF,
             self.crc_poly & 0xFF, (self.crc_poly >> 8) & 0xFF,
             self.init_bio_out & 0xFF, self.init_bio_oe & 0xFF, self.init_tout & 0x7F,
+            self.pat_mask & 0xFF, self.pat_val & 0xFF,
+            ((self.bg_idle & 1) << 6) | (int(self.bg_auto) << 5) | (int(self.bg_en) << 4)
+            | (self.bg_pin & 15),
+            self.bg_div & 0xFF,
         ]
         return b
 
@@ -396,7 +435,9 @@ class Config:
                    pull_thresh=b[4], push_thresh=b[5], side_count=b[6] & 7,
                    side_pindir=bool(b[6] & 8), side_base=b[6] >> 4, wrap_top=b[7], wrap_bot=b[8],
                    entry=b[9], od_mask=b[10], crc_poly=b[11] | (b[12] << 8), init_bio_out=b[13],
-                   init_bio_oe=b[14], init_tout=b[15])
+                   init_bio_oe=b[14], init_tout=b[15], pat_mask=b[16], pat_val=b[17],
+                   bg_pin=b[18] & 15, bg_en=bool(b[18] & 0x10), bg_auto=bool(b[18] & 0x20),
+                   bg_idle=(b[18] >> 6) & 1, bg_div=b[19])
 
     def set_tick_hz(self, hz: float, clk_hz: float = CLK_HZ_DEFAULT) -> "Config":
         self.div_int, self.div_frac = divider_from_ratio(clk_hz / float(hz))
@@ -405,13 +446,22 @@ class Config:
     def tick_period(self) -> float:
         return max(1.0, self.div_int + self.div_frac / 256.0) if self.div_int else 1.0
 
+    def bgclk_hz(self, clk_hz: float = CLK_HZ_DEFAULT) -> float:
+        """Background clock frequency: f_tick / (2 * (BG_DIV + 1))."""
+        return clk_hz / self.tick_period() / (2 * (self.bg_div + 1))
+
 
 # ---------------------------------------------------------------------------
 # Program image and output formats
 # ---------------------------------------------------------------------------
+BIN_MAGIC = b"PESM"
+BIN_HEADER_LEN = 8
+BIN_LEN = BIN_HEADER_LEN + 2 * IMEM_DEPTH + NUM_CFG
+
+
 @dataclass
 class Image:
-    """A loadable program: 32 instruction words + 16 config bytes."""
+    """A loadable program: 64 instruction words + 20 config bytes."""
     words: List[int] = field(default_factory=lambda: [INSTR_HALT] * IMEM_DEPTH)
     cfg: List[int] = field(default_factory=lambda: list(CFG_DEFAULTS))
     labels: Dict[str, int] = field(default_factory=dict)
@@ -420,8 +470,8 @@ class Image:
     name: str = "pesm"
 
     def __post_init__(self):
-        if len(self.words) != IMEM_DEPTH or len(self.cfg) != 16:
-            raise IsaError("image needs 32 words and 16 config bytes")
+        if len(self.words) != IMEM_DEPTH or len(self.cfg) != NUM_CFG:
+            raise IsaError(f"image needs {IMEM_DEPTH} words and {NUM_CFG} config bytes")
 
     @property
     def config(self) -> Config:
@@ -432,20 +482,34 @@ class Image:
         return min(self.cfg[6] & 7, 4)
 
     # ---- formats ----
-    def to_bin(self) -> bytes:
-        """80 bytes: 32 big-endian words (WRITE_IMEM payload) + 16 cfg bytes (WRITE_CFG payload)."""
+    def imem_bytes(self) -> bytes:
+        """WRITE_IMEM payload: 64 big-endian words."""
         out = bytearray()
         for w in self.words:
             out += bytes([(w >> 8) & 0xFF, w & 0xFF])
-        out += bytes(c & 0xFF for c in self.cfg)
         return bytes(out)
+
+    def cfg_bytes(self) -> bytes:
+        """WRITE_CFG payload: 20 config bytes."""
+        return bytes(c & 0xFF for c in self.cfg)
+
+    def to_bin(self) -> bytes:
+        """156 bytes: 8-byte header ("PESM", ISA version, imem depth, cfg count, 0),
+        then the WRITE_IMEM payload (128 B) and the WRITE_CFG payload (20 B)."""
+        hdr = BIN_MAGIC + bytes([ISA_VERSION, IMEM_DEPTH, NUM_CFG, 0])
+        return hdr + self.imem_bytes() + self.cfg_bytes()
 
     @classmethod
     def from_bin(cls, data: bytes, name: str = "pesm") -> "Image":
-        if len(data) != 80:
-            raise IsaError("PESM .bin must be exactly 80 bytes")
-        words = [(data[2 * i] << 8) | data[2 * i + 1] for i in range(IMEM_DEPTH)]
-        return cls(words=words, cfg=list(data[64:80]), length=IMEM_DEPTH, name=name)
+        if len(data) != BIN_LEN or data[:4] != BIN_MAGIC:
+            raise IsaError(f"not a PESM v{ISA_VERSION} .bin (need {BIN_LEN} bytes starting "
+                           f"with {BIN_MAGIC!r})")
+        if tuple(data[4:7]) != (ISA_VERSION, IMEM_DEPTH, NUM_CFG):
+            raise IsaError(f"PESM .bin is for ISA v{data[4]} ({data[5]} words, {data[6]} cfg); "
+                           f"this toolchain is v{ISA_VERSION} ({IMEM_DEPTH}, {NUM_CFG})")
+        d = data[BIN_HEADER_LEN:]
+        words = [(d[2 * i] << 8) | d[2 * i + 1] for i in range(IMEM_DEPTH)]
+        return cls(words=words, cfg=list(d[2 * IMEM_DEPTH:]), length=IMEM_DEPTH, name=name)
 
     def to_mem(self) -> str:
         """$readmemh image of the instruction memory (one 16-bit word per line)."""
@@ -454,15 +518,31 @@ class Image:
     def to_cfg_mem(self) -> str:
         return "// PESM cfg, $readmemh\n@0\n" + "".join(f"{c:02x}\n" for c in self.cfg)
 
+    def to_lists(self):
+        """(imem, cfg) as plain Python lists of ints."""
+        return list(self.words), list(self.cfg)
+
     def to_py(self) -> str:
+        """Python source defining <NAME>_IMEM and <NAME>_CFG lists."""
+        ident = "".join(ch if ch.isalnum() else "_" for ch in self.name).upper() or "PESM"
+        if ident[0].isdigit():
+            ident = "_" + ident
         ws = ", ".join(f"0x{w:04x}" for w in self.words)
         cs = ", ".join(f"0x{c:02x}" for c in self.cfg)
-        return f"{self.name.upper()}_IMEM = [{ws}]\n{self.name.upper()}_CFG = [{cs}]\n"
+        return f"{ident}_IMEM = [{ws}]\n{ident}_CFG = [{cs}]\n"
 
     def to_json(self) -> str:
-        return json.dumps({"name": self.name, "imem": self.words, "cfg": self.cfg,
-                           "cfg_fields": vars(self.config), "labels": self.labels},
-                          indent=2)
+        return json.dumps({"name": self.name, "isa": ISA_VERSION, "imem": self.words,
+                           "cfg": self.cfg, "cfg_fields": vars(self.config),
+                           "labels": self.labels, "length": self.length}, indent=2)
+
+    @classmethod
+    def from_json(cls, text: str) -> "Image":
+        d = json.loads(text)
+        if d.get("isa", ISA_VERSION) != ISA_VERSION:
+            raise IsaError(f"JSON image is for ISA v{d.get('isa')}, toolchain is v{ISA_VERSION}")
+        return cls(words=list(d["imem"]), cfg=list(d["cfg"]), labels=dict(d.get("labels", {})),
+                   length=int(d.get("length", IMEM_DEPTH)), name=d.get("name", "pesm"))
 
     def listing(self) -> str:
         inv: Dict[int, List[str]] = {}

@@ -2,7 +2,7 @@
  * Copyright (c) 2026 PESM contributors
  * SPDX-License-Identifier: Apache-2.0
  *
- * Protocol Engine State Machine (PESM) v2 - Tiny Tapeout IHP CMOS5L top.
+ * Protocol Engine State Machine (PESM) v3 - Tiny Tapeout IHP CMOS5L top.
  *
  * Pin map
  *   ui_in[0]   HOST_SCK     host SPI clock (mode 0)
@@ -14,6 +14,9 @@
  *   uo_out[7:1] TOUT[6:0]   target outputs -> core output pins 8..14
  *   uio[7:0]   BIO[7:0]     target bidirectional -> core pins 0..7
  *                           per-pin output enable, optional open-drain
+ *
+ * One output pin (0..14) can be handed to the background clock generator
+ * (cfg BGCLK_CTL); its level then replaces OUT[pin] at the pad.
  */
 
 `default_nettype none
@@ -56,17 +59,25 @@ module tt_um_protocol_engine (
         .clk(clk), .rst_n(rstn_i), .d(uio_in), .q(bio_s)
     );
 
-    wire sck_s  = host_s[0];
-    wire mosi_s = host_s[1];
-    wire csn_s  = host_s[2];
-    wire boot   = host_s[3];
+    wire sck_s    = host_s[0];
+    wire mosi_s   = host_s[1];
+    wire csn_s    = host_s[2];
+    wire boot_pre = host_s[3];       // synchronized MODE
+
+    // The core (and the imem/cfg write gate) see MODE one cycle later, so the
+    // host block knows one cycle ahead that BOOT is about to end.
+    reg boot;
+    always @(posedge clk or negedge rstn_i) begin
+        if (!rstn_i) boot <= 1'b1;
+        else         boot <= boot_pre;
+    end
 
     // ------------------------------------------------------------------
     // Interconnect
     // ------------------------------------------------------------------
-    wire [4:0]  pc;
-    wire [4:0]  fetch_pc;
-    wire [15:0] instr;
+    wire [5:0]  pc;
+    wire [5:0]  rd_pc;
+    wire [15:0] rd_instr;
 
     wire [15:0] cfg_div_int;
     wire [7:0]  cfg_div_frac;
@@ -75,11 +86,15 @@ module tt_um_protocol_engine (
     wire [2:0]  cfg_side_count;
     wire        cfg_side_pindir;
     wire [3:0]  cfg_side_base;
-    wire [4:0]  cfg_wrap_top, cfg_wrap_bot, cfg_entry;
+    wire [5:0]  cfg_wrap_top, cfg_wrap_bot, cfg_entry;
     wire [7:0]  cfg_od_mask;
     wire [15:0] cfg_crc_poly;
     wire [7:0]  cfg_init_bio_out, cfg_init_bio_oe;
     wire [6:0]  cfg_init_tout;
+    wire [7:0]  cfg_pat_mask, cfg_pat_val, cfg_bg_div;
+    wire [3:0]  cfg_bg_pin;
+    wire        cfg_bg_en, cfg_bg_auto, cfg_bg_idle;
+    wire        bg_q;
 
     wire        tx_push, tx_pop, tx_empty, tx_full;
     wire [7:0]  tx_wdata, tx_head;
@@ -111,8 +126,8 @@ module tt_um_protocol_engine (
     pesm_host u_host (
         .clk(clk), .rst_n(rstn_i),
         .sck(sck_s), .mosi(mosi_s), .csn(csn_s), .miso(miso),
-        .boot(boot),
-        .core_pc(pc), .fetch_pc(fetch_pc), .core_instr(instr),
+        .boot(boot), .boot_pre(boot_pre),
+        .core_pc(pc), .rd_pc(rd_pc), .rd_instr(rd_instr),
         .cfg_div_int(cfg_div_int), .cfg_div_frac(cfg_div_frac),
         .cfg_out_right(cfg_out_right), .cfg_in_right(cfg_in_right),
         .cfg_autopull(cfg_autopull), .cfg_autopush(cfg_autopush),
@@ -123,6 +138,9 @@ module tt_um_protocol_engine (
         .cfg_od_mask(cfg_od_mask), .cfg_crc_poly(cfg_crc_poly),
         .cfg_init_bio_out(cfg_init_bio_out), .cfg_init_bio_oe(cfg_init_bio_oe),
         .cfg_init_tout(cfg_init_tout),
+        .cfg_pat_mask(cfg_pat_mask), .cfg_pat_val(cfg_pat_val),
+        .cfg_bg_pin(cfg_bg_pin), .cfg_bg_en(cfg_bg_en), .cfg_bg_auto(cfg_bg_auto),
+        .cfg_bg_idle(cfg_bg_idle), .cfg_bg_div(cfg_bg_div),
         .tx_push(tx_push), .tx_wdata(tx_wdata), .tx_full(tx_full), .tx_level(tx_level),
         .rx_pop(rx_pop), .rx_empty(rx_empty), .rx_head(rx_head), .rx_level(rx_level),
         .flush_tx(flush_tx), .flush_rx(flush_rx),
@@ -148,7 +166,7 @@ module tt_um_protocol_engine (
 
     pesm_core u_core (
         .clk(clk), .rst_n(rstn_i), .boot(boot),
-        .pc_o(pc), .fetch_pc(fetch_pc), .fetch_instr(instr),
+        .pc_o(pc), .rd_pc(rd_pc), .rd_instr(rd_instr),
         .bio_in(bio_s), .tin(tin_s),
         .cfg_div_int(cfg_div_int), .cfg_div_frac(cfg_div_frac),
         .cfg_out_right(cfg_out_right), .cfg_in_right(cfg_in_right),
@@ -160,10 +178,12 @@ module tt_um_protocol_engine (
         .cfg_crc_poly(cfg_crc_poly),
         .cfg_init_bio_out(cfg_init_bio_out), .cfg_init_bio_oe(cfg_init_bio_oe),
         .cfg_init_tout(cfg_init_tout),
+        .cfg_pat_mask(cfg_pat_mask), .cfg_pat_val(cfg_pat_val),
+        .cfg_bg_auto(cfg_bg_auto), .cfg_bg_idle(cfg_bg_idle), .cfg_bg_div(cfg_bg_div),
         .tx_empty(tx_empty), .tx_head(tx_head), .tx_pop(tx_pop),
         .rx_full(rx_full), .rx_level(rx_level), .rx_push(rx_push), .rx_wdata(rx_wdata),
         .hflag(hflag), .hflag_clr(hflag_clr_core), .clr_flags(clr_flags),
-        .out_reg(out_reg), .oe_reg(oe_reg),
+        .out_reg(out_reg), .oe_reg(oe_reg), .bg_q(bg_q),
         .running(st_running), .halted(st_halted), .irq(st_irq), .err(st_err),
         .rx_ovf(st_rx_ovf), .x(st_x), .y(st_y)
     );
@@ -172,9 +192,15 @@ module tt_um_protocol_engine (
     // Pads
     //   open-drain BIO pin: never drives 1; drives 0 when out=0 and oe=1
     // ------------------------------------------------------------------
-    assign uo_out  = {out_reg[14:8], miso};
-    assign uio_out = out_reg[7:0] & ~cfg_od_mask;
-    assign uio_oe  = oe_reg & ~(cfg_od_mask & out_reg[7:0]);
+    reg [14:0] out_pad;
+    always @(*) begin
+        out_pad = out_reg;
+        if (cfg_bg_en && cfg_bg_pin != 4'd15) out_pad[cfg_bg_pin] = bg_q;
+    end
+
+    assign uo_out  = {out_pad[14:8], miso};
+    assign uio_out = out_pad[7:0] & ~cfg_od_mask;
+    assign uio_oe  = oe_reg & ~(cfg_od_mask & out_pad[7:0]);
 
     wire _unused = &{ena, 1'b0};
 
@@ -194,10 +220,26 @@ module tt_um_protocol_engine (
         end
     end
 
+    // The write gate and the read-port hand-over in pesm_host rely on this
+    always @(posedge clk) begin
+        if (f_past_valid && rstn_i && $past(rstn_i)) assert (boot == $past(boot_pre));
+    end
+
     // Open-drain pins never drive high
     always @(*) begin
         if (rstn_i) assert (((uio_out & uio_oe) & cfg_od_mask) == 8'h00);
     end
+
+    // Background clock owns exactly its pin; every other pad follows OUT
+    genvar gi;
+    generate
+        for (gi = 0; gi < 15; gi = gi + 1) begin : g_pad
+            always @(*) begin
+                if (rstn_i)
+                    assert (out_pad[gi] == ((cfg_bg_en && cfg_bg_pin == gi) ? bg_q : out_reg[gi]));
+            end
+        end
+    endgenerate
 `endif
 
 endmodule

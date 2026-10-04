@@ -6,7 +6,7 @@ SIM ?= icarus
 FST ?= -fst
 TOPLEVEL_LANG ?= verilog
 SRC_DIR = $(PWD)/../src
-PROJECT_SOURCES = tt_um_protocol_engine.v pesm_core.v pesm_host.v pesm_fifo.v pesm_clkdiv.v pesm_sync.v
+PROJECT_SOURCES = tt_um_protocol_engine.v pesm_core.v pesm_host.v pesm_fifo.v pesm_clkdiv.v pesm_sync.v pesm_mux4.v
 
 ifneq ($(GATES),yes)
 

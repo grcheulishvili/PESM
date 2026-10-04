@@ -14,6 +14,8 @@ synth/stat_*.txt
 synth/gl_models/
 runs/
 pnr/out/
+pnr/.venv/
+build/
 sw/*.egg-info/
 .pytest_cache/
 sim.vvp

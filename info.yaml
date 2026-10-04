@@ -1,9 +1,9 @@
 # Tiny Tapeout project information
 project:
   title:        "PESM: Protocol Engine State Machine"
-  author:       "PESM contributors"
+  author:       "grcheulishvili"
   discord:      ""
-  description:  "Microcoded, cycle-exact protocol emulator (UART/SPI/I2C/... in firmware) with SPI host port"
+  description:  "Microcoded, cycle-exact protocol emulator (UART/SPI/I2C/USB-LS/... as firmware) with SPI host port"
   language:     "Verilog"
   clock_hz:     50000000
 
@@ -19,6 +19,7 @@ project:
     - "pesm_fifo.v"
     - "pesm_clkdiv.v"
     - "pesm_sync.v"
+    - "pesm_mux4.v"
 
 pinout:
   # Inputs

@@ -23,7 +23,7 @@ class PESMEmulator:
     def __init__(self, clk_hz: float = isa.CLK_HZ_DEFAULT, sck_hz: float = 1e6):
         self.clk_hz = clk_hz
         self.cycles_per_byte = max(1, int(8 * clk_hz / sck_hz))
-        self.model = PESMModel([isa.INSTR_HALT] * 32, list(isa.CFG_DEFAULTS), [])
+        self.model = PESMModel([isa.INSTR_HALT] * isa.IMEM_DEPTH, list(isa.CFG_DEFAULTS), [])
         self.mode_boot = 1
         self.tin = 0
         self.uio_ext = 0xFF
@@ -47,7 +47,7 @@ class PESMEmulator:
     # ------------------------------------------------------------------ status
     @property
     def boot(self) -> bool:
-        return bool(self.model.s2_mode)
+        return bool(self.model.s3_mode)
 
     def _status0(self) -> int:
         m = self.model
@@ -57,7 +57,7 @@ class PESMEmulator:
 
     def _status_bytes(self) -> List[int]:
         m = self.model
-        return [self._status0(), (len(m.tx) << 4) | len(m.rx), m.pc, m.x, m.y]
+        return [self._status0(), (len(m.tx) << 4) | len(m.rx), m.pc, m.x, m.y, isa.CHIP_ID]
 
     # ------------------------------------------------------------------ SPI
     def xfer(self, mosi: Sequence[int]) -> List[int]:
@@ -68,8 +68,19 @@ class PESMEmulator:
         self.step(self.cycles_per_byte)
         miso.append(self._status0())
         cmd = mosi[0]
-        op, addr = cmd >> 5, cmd & 31
-        if op == 7:
+        # command decode (docs/ISA.md section 6) -> internal op 0..7
+        if cmd < 0x40:
+            op, addr = 0, cmd & 63            # WRITE_IMEM
+        elif cmd < 0x80:
+            op, addr = 1, cmd & 63            # READ_IMEM
+        elif cmd < 0xA0:
+            op, addr = 2, cmd & 31            # WRITE_CFG
+        elif cmd < 0xC0:
+            op, addr = 3, cmd & 31            # READ_CFG
+        elif cmd < 0xE0:
+            op, addr = 4 + ((cmd >> 3) & 3), 0  # WRITE_TX, READ_RX, READ_STAT, reserved
+        else:
+            op, addr = 8, 0                   # CONTROL
             if cmd & hp.CTRL_FLUSH_TX:
                 m.tx.clear()
             if cmd & hp.CTRL_FLUSH_RX:
@@ -88,11 +99,11 @@ class PESMEmulator:
                 w = m.imem[addr]
                 out = (w & 0xFF) if phase else (w >> 8)
                 if phase:
-                    addr = (addr + 1) & 31
+                    addr = (addr + 1) & 63
                 phase ^= 1
             elif op == 3:
-                out = m.cfg[addr & 15]
-                addr = (addr & 15) + 1 & 15
+                out = m.cfg[addr] if addr < isa.NUM_CFG else 0
+                addr = (addr + 1) & 31
             elif op == 5:
                 if m.rx:
                     out = m.rx.pop(0)
@@ -101,7 +112,7 @@ class PESMEmulator:
                     self.rx_unf = 1
             elif op == 6:
                 st = self._status_bytes()
-                out = st[sidx] if sidx < 5 else 0
+                out = st[sidx] if sidx < len(st) else 0
                 sidx += 1
             self.step(self.cycles_per_byte)
             miso.append(out)
@@ -113,13 +124,14 @@ class PESMEmulator:
                         m.imem[addr] = (hold << 8) | b
                     else:
                         self.wr_err = 1
-                    addr, phase = (addr + 1) & 31, 0
+                    addr, phase = (addr + 1) & 63, 0
             elif op == 2:
                 if self.boot:
-                    m.cfg[addr & 15] = b & isa.CFG_MASKS[addr & 15]
+                    if addr < isa.NUM_CFG:
+                        m.cfg[addr] = b & isa.CFG_MASKS[addr]
                 else:
                     self.wr_err = 1
-                addr = (addr & 15) + 1 & 15
+                addr = (addr + 1) & 31
             elif op == 4:
                 if len(m.tx) < hp.FIFO_DEPTH:
                     m.tx.append(b)
@@ -129,4 +141,4 @@ class PESMEmulator:
 
     def set_mode(self, boot: bool) -> None:
         self.mode_boot = 1 if boot else 0
-        self.step(4)
+        self.step(5)

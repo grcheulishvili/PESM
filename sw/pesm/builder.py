@@ -1,14 +1,15 @@
 # Copyright (c) 2026 PESM contributors
 # SPDX-License-Identifier: Apache-2.0
 """
-Python DSL for PESM v2 microcode.
+Python DSL for PESM v3 microcode.
 
     from pesm.builder import PESMProgram
 
     p = PESMProgram("uart_tx")
     p.clock(tick_hz=115200).shift(out="right").init_pins(tout=0x01)
     p.macro_uart_tx("tout0")            # TX FIFO -> 8N1 frames, forever
-    image = p.compile()                 # pesm.isa.Image (32 words + 16 cfg bytes)
+    image = p.compile()                 # pesm.isa.Image (64 words + 20 cfg bytes)
+    open("uart_tx.bin", "wb").write(p.to_bin())
 
 Every method returns the program, so calls chain. Class-A instructions
 (ctl, jmp, wait, in/out, set/dir/toggle/drive, mov) take `side=` (side-set
@@ -23,6 +24,7 @@ from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Union
 
 from . import isa
+from . import usb as _usb
 from .isa import IsaError, PinLike
 
 Target = str
@@ -49,7 +51,7 @@ def _sfx(side, delay) -> str:
 
 
 class PESMProgram:
-    """Chainable builder for one 32-word PESM program."""
+    """Chainable builder for one PESM program (up to 64 words)."""
 
     def __init__(self, name: str = "pesm", clk_hz: float = isa.CLK_HZ_DEFAULT):
         self.name = name
@@ -135,6 +137,56 @@ class PESMProgram:
 
     def crc_poly(self, poly: int) -> "PESMProgram":
         return self._set("crc_poly", poly & 0xFFFF)
+
+    def pattern(self, mask: int, value: int = 0) -> "PESMProgram":
+        """Pattern-compare registers used by jmp_if_pattern()/wait_pattern():
+        match = ((window ^ expected) & mask) == 0. `value` is the expected
+        window when the compare does not use X."""
+        if not (0 <= mask <= 0xFF and 0 <= value <= 0xFF):
+            raise DslError("pattern mask/value are 8-bit")
+        self._set("pat_mask", mask)
+        return self._set("pat_val", value)
+
+    def pattern_pins(self, levels: Dict[PinLike, int], base: PinLike = 0) -> "PESMProgram":
+        """pattern() from {pin: level}: the pins must lie in the 8-input
+        window starting at `base` (use the same base in jmp_if_pattern)."""
+        b = isa.pin_index(base)
+        mask = val = 0
+        for pin, lvl in levels.items():
+            k = (isa.pin_index(pin) - b) & 15
+            if k > 7:
+                raise DslError(f"{pin} is outside the 8-pin window at {base}")
+            mask |= 1 << k
+            val |= (int(lvl) & 1) << k
+        return self.pattern(mask, val)
+
+    def background_clock(self, pin: Optional[PinLike] = None, hz: Optional[float] = None,
+                         div: Optional[int] = None, auto: bool = True,
+                         idle: int = 0) -> "PESMProgram":
+        """Free-running clock tied to the tick grid: toggles every (div + 1)
+        ticks, f = f_tick / (2 * (div + 1)). `pin` (an output pin, or None for
+        an internal timebase) is taken over by the generator; its level is
+        also readable as input pin 'bgclk'. auto=False: stopped (at `idle`)
+        until bgclk_start(). Give `hz` after clock()."""
+        if (hz is None) == (div is None):
+            raise DslError("background_clock() needs exactly one of hz or div")
+        if hz is not None:
+            f_tick = self.clk_hz / self.cfg.tick_period()
+            div = int(round(f_tick / (2.0 * float(hz)))) - 1
+        if not 0 <= div <= 255:
+            raise DslError(f"background clock divider {div} out of range 0..255 "
+                           "(lower the tick rate or raise the frequency)")
+        if pin is None:
+            self._set("bg_en", False)
+        else:
+            i = isa.pin_index(pin)
+            if i > 14:
+                raise DslError("background clock pin must be an output pin (0..14)")
+            self._set("bg_en", True)
+            self._set("bg_pin", i)
+        self._set("bg_div", div)
+        self._set("bg_auto", bool(auto))
+        return self._set("bg_idle", int(idle) & 1)
 
     def init_pins(self, bio_out: Optional[int] = None, bio_oe: Optional[int] = None,
                   tout: Optional[int] = None) -> "PESMProgram":
@@ -247,6 +299,17 @@ class PESMProgram:
         which = "all" if (isr and osr) else ("isr" if isr else "osr")
         return self._a(lambda t, l: isa.enc_clr(isr, osr, t), f"clr {which}", side, delay)
 
+    def bgclk_start(self, reset: bool = False, side=None, delay=None):
+        """Start the background clock. reset=True: from the idle level with a
+        full first half-period (first edge (div + 1) ticks after this one)."""
+        return self._a(lambda t, l: isa.enc_bgclk(True, reset, t),
+                       "bgclk on" + (" reset" if reset else ""), side, delay)
+
+    def bgclk_stop(self, reset: bool = False, side=None, delay=None):
+        """Stop the background clock: freeze the level, or reset=True: back to idle."""
+        return self._a(lambda t, l: isa.enc_bgclk(False, reset, t),
+                       "bgclk off" + (" reset" if reset else ""), side, delay)
+
     # ==================================================================
     # Branches
     # ==================================================================
@@ -277,8 +340,26 @@ class PESMProgram:
         return self._b(lambda l: isa.enc_jpin(pin, level, self._tgt(l, target)),
                        f"jpin {_pin_txt(pin)}, {level}, {target}")
 
+    def jmp_if_pattern(self, target, base: PinLike = 0, expect: str = "cfg",
+                       match: bool = True):
+        """Single-cycle multi-pin branch. Window = inputs base..base+7;
+        jump if ((window ^ expected) & PAT_MASK) == 0 (match=True) or != 0
+        (match=False). expected = pattern() value ('cfg') or register X ('x')."""
+        if expect not in ("cfg", "x"):
+            raise DslError("expect must be 'cfg' or 'x'")
+        mn = "j" + ("" if match else "n") + "pat" + ("x" if expect == "x" else "")
+        return self._b(lambda l: isa.enc_jpat(self._tgt(l, target), base, expect == "x",
+                                              not match),
+                       f"{mn} {_pin_txt(base)}, {target}")
+
+    def wait_pattern(self, base: PinLike = 0, expect: str = "cfg", match: bool = True):
+        """Stall until the pattern matches (match=False: until it stops matching).
+        One word; the pins are polled every clk."""
+        lab = self.new_label("wp")
+        return self.label(lab).jmp_if_pattern(lab, base, expect, not match)
+
     def jmp_reg(self, reg: Reg = "x", side=None, delay=None):
-        """Computed jump: pc <- reg[4:0] (jump tables)."""
+        """Computed jump: pc <- reg[5:0] (jump tables)."""
         return self.mov("pc", reg, side=side, delay=delay)
 
     # ==================================================================
@@ -582,9 +663,70 @@ class PESMProgram:
         self.label(eop).set_pins("null", delay=1).ldi("x", j).set_pins("x", delay=2)
         return self.nop(delay=1).jmp(label)
 
+    def macro_usb_ls_token(self, pid: Union[str, int], addr: int = 0, endp: int = 0,
+                           dp: PinLike = "bio0", dm: PinLike = "bio1",
+                           idle_ticks: int = 1) -> "PESMProgram":
+        """One complete USB low-speed token packet with constant fields:
+        SYNC, PID ('setup' | 'out' | 'in' or a 4-bit number), ADDR, ENDP, CRC5
+        and the SE0-SE0-J end of packet. CRC5, bit stuffing and NRZI are
+        resolved at compile time; the microcode is one atomic D+/D- write per
+        line transition (2 + 16..28 + 1 words), each exactly on the tick grid.
+        tick = 1.5 MHz. The line is left driving J for `idle_ticks` bit times.
+        Clobbers X, Y; the other BIO outputs are driven 0 while sending.
+        Applies: D+/D- outputs idle at J (also in BOOT)."""
+        who = "macro_usb_ls_token"
+        pdp, pdm = isa.pin_index(dp), isa.pin_index(dm)
+        if pdp > 7 or pdm > 7 or pdp == pdm:
+            raise DslError("D+/D- must be two different BIO pins")
+        if idle_ticks < 1:
+            raise DslError("idle_ticks >= 1")
+        try:
+            pkt = _usb.token_packet(pid, addr, endp)
+        except (ValueError, KeyError) as e:
+            raise DslError(f"{who}: {e}") from None
+        # low speed: J = D- high, K = D+ high
+        j, k, both = 1 << pdm, 1 << pdp, (1 << pdp) | (1 << pdm)
+        self.cfg.init_bio_out = (self.cfg.init_bio_out & ~both) | j
+        self.cfg.init_bio_oe |= both
+        self._set("side_count", self.cfg.side_count, who)   # delay field width is now fixed
+        maxd = (1 << (4 - min(self.cfg.side_count, 4))) - 1
+        if maxd < 1:
+            raise DslError(f"{who} needs a pre-delay field (side-set count <= 3)")
+        src = {_usb.J: "x", _usb.K: "y", _usb.SE0: "null"}
+        self.ldi("x", j).ldi("y", k)
+        wait = 1                       # ticks from the previous write to this one
+        for state, n in _usb.runs(_usb.line_states(pkt)):
+            while wait > maxd:
+                self.nop(delay=maxd)
+                wait -= maxd
+            self.set_pins(src[state], delay=wait)
+            wait = n
+        wait += idle_ticks - 1         # the final J run already lasts one bit time
+        while wait > maxd:
+            self.nop(delay=maxd)
+            wait -= maxd
+        return self.nop(delay=wait)
+
     # ==================================================================
     # Output
     # ==================================================================
+    def to_bin(self) -> bytes:
+        """Compile straight to the flashable .bin image (see Image.to_bin)."""
+        return self.compile().to_bin()
+
+    def to_mem(self) -> str:
+        """Compile to a $readmemh image of the instruction memory."""
+        return self.compile().to_mem()
+
+    def to_lists(self):
+        """Compile to (imem, cfg) Python lists."""
+        return self.compile().to_lists()
+
+    def save(self, base: str) -> List[str]:
+        """Compile and write <base>.bin/.mem/_cfg.mem/.py/.json/.lst/.asm."""
+        from .assembler import write_all
+        return write_all(self.compile(), base)
+
     def compile(self) -> isa.Image:
         if len(self._ins) > isa.IMEM_DEPTH:
             raise DslError(f"program has {len(self._ins)} instructions (max {isa.IMEM_DEPTH})")
@@ -622,7 +764,9 @@ class PESMProgram:
         lines += [f".cfg 6 {img.cfg[6]:#04x}", f".cfg 7 {c.wrap_top}", f".cfg 8 {c.wrap_bot}",
                   f".cfg 9 {c.entry}", f".od {c.od_mask:#04x}", f".crc_poly {c.crc_poly:#06x}",
                   f".init_out {c.init_bio_out:#04x}", f".init_oe {c.init_bio_oe:#04x}",
-                  f".init_tout {c.init_tout:#04x}"]
+                  f".init_tout {c.init_tout:#04x}",
+                  f".pattern {c.pat_mask:#04x} {c.pat_val:#04x}",
+                  f".cfg 18 {img.cfg[18]:#04x}", f".cfg 19 {img.cfg[19]:#04x}"]
         inv: Dict[int, List[str]] = {}
         for k, v in self._labels.items():
             inv.setdefault(v, []).append(k)

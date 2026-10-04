@@ -1,7 +1,7 @@
 # Copyright (c) 2026 PESM contributors
 # SPDX-License-Identifier: Apache-2.0
 """
-PESM v2 host programmer.
+PESM v3 host programmer.
 
 Talks to the chip's framed SPI host port (mode 0, MSB first):
 
@@ -20,10 +20,20 @@ Backends ("transports"):
 
 SCK must be <= f_clk/8 (6.25 MHz at 50 MHz). Default 1 MHz.
 
+Programming sequence (Programmer.load + run):
+    1. MODE high: core held in reset (BOOT)
+    2. CONTROL frame: flush FIFOs, clear flags
+    3. READ_STATUS: check the chip ID
+    4. CS_N low, WRITE_CFG 0 + 20 bytes, CS_N high
+    5. CS_N low, WRITE_IMEM 0 + 64 words, CS_N high
+    6. READ_IMEM / READ_CFG over MISO and compare (retry, then VerifyError)
+    7. MODE low: the core starts at ENTRY
+
 CLI:
     python -m pesm.programmer prog.pasm --backend ftdi --url ftdi://ftdi:232h/1
     python -m pesm.programmer prog.bin  --backend spidev --spi 0.0 --mode-gpio gpiochip0:17
     python -m pesm.programmer --status --backend ftdi
+    python -m pesm.programmer prog.pasm --backend ftdi --monitor 2.0
 """
 
 from __future__ import annotations
@@ -31,7 +41,8 @@ from __future__ import annotations
 import argparse
 import sys
 import time
-from typing import List, Optional, Sequence, Union
+from dataclasses import dataclass, field
+from typing import Callable, List, Optional, Sequence, Union
 
 from . import hostproto as hp
 from . import isa
@@ -211,6 +222,15 @@ def open_transport(backend: str, **kw) -> Transport:
 # ===========================================================================
 # Programmer
 # ===========================================================================
+@dataclass
+class MonitorResult:
+    """What Programmer.monitor() saw."""
+    statuses: List[hp.Status] = field(default_factory=list)   # one per change of state
+    rx: List[int] = field(default_factory=list)               # every byte drained
+    polls: int = 0
+    final: Optional[hp.Status] = None
+
+
 class Programmer:
     """High-level operations on a PESM chip over a Transport."""
 
@@ -234,6 +254,14 @@ class Programmer:
     def status(self) -> hp.Status:
         return hp.Status.decode(self.t.xfer(hp.frame_status()))
 
+    def identify(self) -> int:
+        """Chip ID byte (0x30 for ISA v3). Raises if no PESM v3 answers."""
+        cid = self.status().chip_id
+        if cid != isa.CHIP_ID:
+            raise ProgrammerError(f"unexpected chip ID {cid:#04x} (expected {isa.CHIP_ID:#04x}): "
+                                  "check wiring, clock and SCK <= f_clk/8")
+        return cid
+
     def control(self, bits: int) -> None:
         self.t.xfer(hp.frame_control(bits))
 
@@ -249,20 +277,22 @@ class Programmer:
     def write_imem(self, words: Sequence[int], addr: int = 0) -> None:
         self.t.xfer(hp.frame_write_imem(addr, words))
 
-    def read_imem(self, addr: int = 0, n: int = 32) -> List[int]:
+    def read_imem(self, addr: int = 0, n: int = isa.IMEM_DEPTH) -> List[int]:
         return hp.parse_read_imem(self.t.xfer(hp.frame_read_imem(addr, n)), n)
 
     def write_config(self, cfg: Sequence[int], addr: int = 0) -> None:
         self.t.xfer(hp.frame_write_cfg(addr, cfg))
 
-    def read_config(self, addr: int = 0, n: int = 16) -> List[int]:
+    def read_config(self, addr: int = 0, n: int = isa.NUM_CFG) -> List[int]:
         return list(self.t.xfer(hp.frame_read_cfg(addr, n))[1:])
 
     # ---------------- program load ----------------
     def load(self, image: isa.Image, verify: bool = True, retries: int = 2,
              flush_fifos: bool = True) -> None:
-        """BOOT, write config + imem, verify by readback, stay in BOOT."""
+        """BOOT, write config + imem, verify by readback over MISO, stay in BOOT."""
         self.boot()
+        if verify:
+            self.identify()
         if flush_fifos:
             self.control(hp.CTRL_FLUSH_TX | hp.CTRL_FLUSH_RX | hp.CTRL_HFLAG_CLR
                          | hp.CTRL_CLR_FLAGS)
@@ -273,7 +303,7 @@ class Programmer:
             if not verify:
                 return
             got_w = self.read_imem(0, isa.IMEM_DEPTH)
-            got_c = self.read_config(0, 16)
+            got_c = self.read_config(0, isa.NUM_CFG)
             bad_w = [i for i, (a, b) in enumerate(zip(got_w, image.words)) if a != b]
             bad_c = [i for i, (a, b) in enumerate(zip(got_c, exp_cfg)) if a != b]
             if not bad_w and not bad_c:
@@ -333,6 +363,57 @@ class Programmer:
                 raise ProgrammerError(f"core did not halt: {st}")
             self.t.delay(poll)
 
+    # ---------------- runtime monitoring ----------------
+    def monitor(self, duration: Optional[float] = None, interval: float = 0.01,
+                drain_rx: bool = True, until_halt: bool = False,
+                on_status: Optional[Callable[[hp.Status], None]] = None,
+                on_rx: Optional[Callable[[List[int]], None]] = None,
+                max_polls: Optional[int] = None) -> MonitorResult:
+        """Poll the running chip: READ_STATUS every `interval` seconds, drain the
+        RX FIFO as bytes arrive, report every change of pc/flags/levels.
+
+        Ends after `duration` seconds, when the core halts (until_halt), or after
+        max_polls polls, whichever comes first; at least one of them is needed.
+        Sticky error flags (ERR, RX_OVF, TX_OVF, RX_UNF) are reported, not cleared."""
+        if duration is None and not until_halt and max_polls is None:
+            raise ProgrammerError("monitor() needs duration, until_halt or max_polls")
+        res = MonitorResult()
+        t_end = None if duration is None else self._now() + duration
+        last = None
+        while True:
+            st = self.status()
+            res.polls += 1
+            res.final = st
+            if drain_rx and st.rx_level:
+                data = list(self.t.xfer(hp.frame_read_rx(st.rx_level))[1:])
+                res.rx += data
+                if on_rx:
+                    on_rx(data)
+            key = (st.pc, st.running, st.halted, st.irq, st.err, st.tx_ovf, st.rx_ovf,
+                   st.rx_unf, st.hflag, st.tx_level, st.rx_level)
+            if key != last:
+                last = key
+                res.statuses.append(st)
+                if on_status:
+                    on_status(st)
+            if until_halt and st.halted:
+                break
+            if max_polls is not None and res.polls >= max_polls:
+                break
+            if t_end is not None and self._now() >= t_end:
+                break
+            self.t.delay(interval)
+        if drain_rx and res.final.halted:
+            # the core stopped: pick up what was pushed after the last drain
+            st = self.status()
+            if st.rx_level:
+                data = list(self.t.xfer(hp.frame_read_rx(st.rx_level))[1:])
+                res.rx += data
+                if on_rx:
+                    on_rx(data)
+            res.final = self.status()
+        return res
+
     # time source that also works for simulated transports
     def _now(self) -> float:
         emu = getattr(self.t, "emu", None)
@@ -347,11 +428,11 @@ class Programmer:
 # ===========================================================================
 def load_image(path: str) -> isa.Image:
     if path.endswith(".bin"):
-        return isa.Image.from_bin(open(path, "rb").read(), name=path)
+        with open(path, "rb") as f:
+            return isa.Image.from_bin(f.read(), name=path)
     if path.endswith(".json"):
-        import json
-        d = json.load(open(path))
-        return isa.Image(words=d["imem"], cfg=d["cfg"], length=32, name=d.get("name", "pesm"))
+        with open(path) as f:
+            return isa.Image.from_json(f.read())
     from .assembler import assemble_file
     return assemble_file(path)
 
@@ -381,15 +462,24 @@ def main(argv=None) -> int:
     ap.add_argument("--no-verify", action="store_true")
     ap.add_argument("--no-run", action="store_true", help="leave the core in BOOT")
     ap.add_argument("--status", action="store_true", help="only print status")
+    ap.add_argument("--reset", action="store_true", help="pulse rst_n before loading")
+    ap.add_argument("--monitor", type=float, metavar="SECONDS",
+                    help="after starting, print status changes and RX bytes for this long")
+    ap.add_argument("--interval", type=float, default=0.01, help="monitor poll interval (s)")
     add_transport_args(ap)
     a = ap.parse_args(argv)
     with transport_from_args(a) as t:
         p = Programmer(t, log=print)
+        if a.reset:
+            p.reset_chip()
         if a.image:
             img = load_image(a.image)
             p.load(img, verify=not a.no_verify)
             if not a.no_run:
                 p.run()
+        if a.monitor:
+            p.monitor(a.monitor, a.interval, on_status=lambda st: print(f"status: {st}"),
+                      on_rx=lambda d: print("rx: " + " ".join(f"{b:02x}" for b in d)))
         print(p.status())
     return 0
 

@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pesm"
-version = "2.0.0"
-description = "PESM v2 protocol-engine toolchain: ISA, assembler, Python DSL, SPI host programmer"
+version = "3.0.0"
+description = "PESM v3 protocol-engine toolchain: ISA, assembler, Python DSL, SPI host programmer"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.9"
 

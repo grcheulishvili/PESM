@@ -1,13 +1,15 @@
 # Copyright (c) 2026 PESM contributors
 # SPDX-License-Identifier: Apache-2.0
 """
-PESM v2 text assembler.
+PESM v3 text assembler.
 
     python -m pesm.assembler prog.pasm                       # listing
-    python -m pesm.assembler prog.pasm -f bin  -o prog.bin   # 80-byte image
+    python -m pesm.assembler prog.pasm -f bin  -o prog.bin   # 156-byte image (header+imem+cfg)
     python -m pesm.assembler prog.pasm -f mem  -o prog.mem   # $readmemh (+ prog_cfg.mem)
     python -m pesm.assembler prog.pasm -f py                 # Python lists
     python -m pesm.assembler prog.pasm -f json -o prog.json
+    python -m pesm.assembler prog.pasm -f asm                # canonical re-assemblable source
+    python -m pesm.assembler prog.pasm -o out/prog --all     # every format next to out/prog.*
     python -m pesm.assembler prog.pasm --spi                 # host SPI frames
 
 Syntax summary (full reference: docs/ISA.md, docs/DSL_GUIDE.md):
@@ -19,6 +21,8 @@ Syntax summary (full reference: docs/ISA.md, docs/DSL_GUIDE.md):
     .pull_thresh n  .push_thresh n  .side n [base=pin] [pindir]
     .wrap_target    .wrap        .entry label    .org n
     .od mask  .crc_poly p  .init_out v  .init_oe v  .init_tout v  .cfg addr value
+    .pattern mask value          ; JPAT compare registers
+    .bgclk [pin=<out pin>] [div=n | hz=f] [auto] [idle=0|1]   ; background clock
     .word 0x1234                 ; raw instruction word
 
 Every class-A instruction accepts `side v` and `[delay]` suffixes.
@@ -130,6 +134,10 @@ def encode_line(line: str, sc: int, labels: Dict[str, int], defines: Dict[str, i
         if la[0] not in ("isr", "osr", "all"):
             raise AsmError("clr isr|osr|all")
         return isa.enc_clr(la[0] in ("isr", "all"), la[0] in ("osr", "all"), t())
+    if mn == "bgclk":
+        if la not in (["on"], ["off"], ["on", "reset"], ["off", "reset"]):
+            raise AsmError("bgclk on|off [reset]")
+        return isa.enc_bgclk(la[0] == "on", "reset" in la, t())
     # ---- branches ----
     if mn == "jmp":
         if len(args) == 1:
@@ -142,6 +150,13 @@ def encode_line(line: str, sc: int, labels: Dict[str, int], defines: Dict[str, i
         need(3)
         no_tail()
         return isa.enc_jpin(_pin(args[0], defines), _int(args[1], defines), target(args[2]))
+    if mn in ("jpat", "jnpat", "jpatx", "jnpatx"):
+        # jpat [base,] target : branch on ((window ^ expected) & PAT_MASK) == 0
+        if len(args) not in (1, 2):
+            raise AsmError(f"{mn} [base_pin,] target")
+        no_tail()
+        base = _pin(args[0], defines) if len(args) == 2 else 0
+        return isa.enc_jpat(target(args[-1]), base, mn.endswith("x"), mn.startswith("jn"))
     if mn == "wait":
         if len(args) not in (2, 3):
             raise AsmError("wait high|low|rise|fall pin [sync|synchalf]")
@@ -295,14 +310,47 @@ def assemble(text: str, clk_hz: int = isa.CLK_HZ_DEFAULT, name: str = "pesm") ->
                     cfg[14] = _int(a[0], defines) & 0xFF
                 elif d == ".init_tout":
                     cfg[15] = _int(a[0], defines) & 0x7F
+                elif d == ".pattern":
+                    if len(a) != 2:
+                        raise AsmError(".pattern mask value")
+                    cfg[16] = _int(a[0], defines) & 0xFF
+                    cfg[17] = _int(a[1], defines) & 0xFF
+                elif d == ".bgclk":
+                    ctl, div = 0, cfg[19]
+                    for kv in a:
+                        k, _, v = kv.lower().partition("=")
+                        if k == "pin":
+                            p = _pin(v, defines)
+                            if p > 14:
+                                raise AsmError(".bgclk pin must be an output pin 0..14")
+                            ctl = (ctl & ~0x0F) | p | 0x10
+                        elif k == "div":
+                            div = _int(v, defines)
+                            if not 0 <= div <= 255:
+                                raise AsmError(".bgclk div 0..255")
+                        elif k == "hz":
+                            period = max(1.0, cfg[0] + (cfg[1] << 8) + cfg[2] / 256.0)
+                            div = int(round(clk_hz / period / (2.0 * float(v)))) - 1
+                            if not 0 <= div <= 255:
+                                raise AsmError(".bgclk hz out of range for the tick rate "
+                                               "(set .tick_hz/.div first)")
+                        elif k == "auto":
+                            ctl |= 0x20
+                        elif k == "idle":
+                            ctl = (ctl & ~0x40) | ((_int(v, defines) & 1) << 6)
+                        else:
+                            raise AsmError(f"bad .bgclk option {kv}")
+                    cfg[18], cfg[19] = ctl, div
                 elif d == ".cfg":
-                    k = _int(a[0], defines) & 15
+                    k = _int(a[0], defines)
+                    if not 0 <= k < isa.NUM_CFG:
+                        raise AsmError(f".cfg address 0..{isa.NUM_CFG - 1}")
                     cfg[k] = _int(a[1], defines) & isa.CFG_MASKS[k]
                 else:
                     raise AsmError(f"unknown directive {d}")
                 continue
             if not 0 <= addr < isa.IMEM_DEPTH:
-                raise AsmError("program exceeds 32 instructions")
+                raise AsmError(f"program exceeds {isa.IMEM_DEPTH} instructions")
             pending.append((ln, addr, line))
             addr += 1
         except isa.IsaError as e:
@@ -338,27 +386,54 @@ def assemble_file(path: str, clk_hz: int = isa.CLK_HZ_DEFAULT) -> isa.Image:
         return assemble(f.read(), clk_hz, name=os.path.splitext(os.path.basename(path))[0])
 
 
-def write_outputs(img: isa.Image, fmt: str, out: Optional[str]) -> None:
+FORMATS = ("list", "bin", "mem", "py", "json", "asm")
+_EXT = {"list": ".lst", "bin": ".bin", "mem": ".mem", "py": ".py", "json": ".json", "asm": ".asm"}
+
+
+def render(img: isa.Image, fmt: str):
+    """Image -> bytes (bin) or str (all other formats)."""
     if fmt == "bin":
-        data = img.to_bin()
+        return img.to_bin()
+    return {"mem": img.to_mem, "py": img.to_py, "json": img.to_json, "list": img.listing,
+            "asm": img.to_asm}[fmt]()
+
+
+def write_outputs(img: isa.Image, fmt: str, out: Optional[str]) -> List[str]:
+    """Write one format. Returns the files written (empty when printed to stdout)."""
+    if fmt == "bin":
         if not out:
             raise SystemExit("-f bin needs -o")
-        open(out, "wb").write(data)
-        return
+        with open(out, "wb") as f:
+            f.write(img.to_bin())
+        return [out]
     if fmt == "mem":
-        text = img.to_mem()
-        if out:
-            open(out, "w").write(text)
-            base, _ = os.path.splitext(out)
-            open(base + "_cfg.mem", "w").write(img.to_cfg_mem())
-        else:
-            print(text + img.to_cfg_mem())
-        return
-    text = {"py": img.to_py, "json": img.to_json, "list": img.listing, "asm": img.to_asm}[fmt]()
-    if out:
-        open(out, "w").write(text)
-    else:
+        if not out:
+            print(img.to_mem() + img.to_cfg_mem())
+            return []
+        base, _ = os.path.splitext(out)
+        with open(out, "w") as f:
+            f.write(img.to_mem())
+        with open(base + "_cfg.mem", "w") as f:
+            f.write(img.to_cfg_mem())
+        return [out, base + "_cfg.mem"]
+    text = render(img, fmt)
+    if not out:
         print(text)
+        return []
+    with open(out, "w") as f:
+        f.write(text)
+    return [out]
+
+
+def write_all(img: isa.Image, base: str) -> List[str]:
+    """Write every output format to <base>.lst/.bin/.mem/_cfg.mem/.py/.json/.asm."""
+    d = os.path.dirname(base)
+    if d:
+        os.makedirs(d, exist_ok=True)
+    files: List[str] = []
+    for fmt in FORMATS:
+        files += write_outputs(img, fmt, base + _EXT[fmt])
+    return files
 
 
 def main(argv=None) -> int:
@@ -366,9 +441,9 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("source")
-    ap.add_argument("-f", "--format", default="list",
-                    choices=["list", "bin", "mem", "py", "json", "asm"])
-    ap.add_argument("-o", "--output")
+    ap.add_argument("-f", "--format", default="list", choices=list(FORMATS))
+    ap.add_argument("-o", "--output", help="output file (with --all: base name without extension)")
+    ap.add_argument("--all", action="store_true", help="write every format next to -o BASE")
     ap.add_argument("--spi", action="store_true", help="print the host SPI frames")
     ap.add_argument("--clk-hz", type=float, default=isa.CLK_HZ_DEFAULT)
     a = ap.parse_args(argv)
@@ -377,7 +452,12 @@ def main(argv=None) -> int:
     except isa.IsaError as e:
         print(f"{a.source}: {e}", file=sys.stderr)
         return 1
-    write_outputs(img, a.format, a.output)
+    if a.all:
+        base = a.output or os.path.splitext(a.source)[0]
+        for f in write_all(img, base):
+            print(f)
+    else:
+        write_outputs(img, a.format, a.output)
     if a.spi:
         for fr in hostproto.frames_for_image(img):
             print("CS: " + " ".join(f"{b:02x}" for b in fr))

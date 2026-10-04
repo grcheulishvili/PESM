@@ -14,7 +14,7 @@ def test_all_words_roundtrip(sc):
 
 
 def test_every_opcode_and_function_reachable():
-    """Each v2 operation has at least one canonical (non-.word) encoding."""
+    """Each v3 operation has at least one canonical (non-.word) encoding."""
     seen = set()
     for w in range(1 << 16):
         t = isa.disassemble(w)
@@ -22,8 +22,14 @@ def test_every_opcode_and_function_reachable():
             seen.add(t.split()[0])
     expected = {"nop", "halt", "irq", "push", "pull", "sync", "hclr", "clr", "jmp", "jpin",
                 "wait", "in", "out", "set", "dir", "toggle", "drive", "mov", "ldi", "and",
-                "or", "xor", "dec", "inc", "crc", "dly", "dlyt"}
+                "or", "xor", "dec", "inc", "crc", "dly", "dlyt", "bgclk", "jpat", "jnpat",
+                "jpatx", "jnpatx"}
     assert seen == expected
+    # both halves of the 64-word space are reachable from every branch type
+    for mn in ("jmp", "jmp x--,", "jpin 3, 1,", "jpat 2,", "jnpatx 9,"):
+        for tgt in (0, 31, 32, 63):
+            w = encode_line(f"{mn} {tgt}", 0, {}, {})
+            assert isa.disassemble(w) == f"{mn} {tgt}"
     # every jmp condition, mov dst/src/op, alu func, wait kind
     texts = {isa.disassemble(w) for w in range(1 << 16)}
     for c in isa.JMP_CONDS:
@@ -38,8 +44,8 @@ def test_every_opcode_and_function_reachable():
 
 
 def test_reserved_encodings_are_words():
-    for w in (0xA000, 0xF123, 0x0810, 0x0700, 0x2060, 0x3010, 0x6010, 0x68A0,
-              0x8700, 0x8401, 0x8E00, 0x8602, 0x9401):
+    for w in (0xC000, 0xF123, 0x0840, 0x0900, 0x0700, 0x2040, 0x3010, 0x6010, 0x68A0,
+              0x8700, 0x8401, 0x8E00, 0x8602, 0xA401):
         assert isa.disassemble(w).startswith(".word"), hex(w)
 
 
@@ -55,7 +61,14 @@ def test_tail_limits():
 
 @pytest.mark.parametrize("src,err", [
     ("jmp nowhere", "bad number"),
-    ("jmp 32", "jump target"),
+    ("jmp 64", "jump target"),
+    ("jpat 0, 64", "jump target"),
+    ("jpat 16, 0", "pin"),
+    ("jpat 0, 1 [1]", "no side-set"),
+    ("bgclk maybe", "bgclk"),
+    (".bgclk pin=15", "output pin"),
+    (".bgclk div=256", "div"),
+    (".cfg 20 0", "address"),
     ("ldi z, 1", "x|y"),
     ("out pins, 0, 9", "pin count"),
     ("in x, 33", "bit count"),
@@ -71,5 +84,34 @@ def test_assembler_errors(src, err):
 
 
 def test_program_too_long():
-    with pytest.raises(AsmError, match="32"):
-        assemble("\n".join(["nop"] * 33))
+    assert assemble("\n".join(["nop"] * 64)).length == 64
+    with pytest.raises(AsmError, match="64"):
+        assemble("\n".join(["nop"] * 65))
+
+
+def test_v3_encodings_are_pinned():
+    """Bit-exact encodings of the v3 additions (docs/ISA.md section 2)."""
+    assert isa.enc_jmp("always", 5) == 0x1050
+    assert isa.enc_jmp("always", 37) == 0x9050            # opcode 9 = target + 32
+    assert isa.enc_jmp("x--", 63, 0xF) == 0x95FF
+    assert isa.enc_jpin(9, 1, 45) == 0x29AD
+    assert isa.enc_jpat(33) == 0xB021
+    assert isa.enc_jpat(1, base=8, use_x=True, invert=True) == 0xBE01
+    assert isa.enc_bgclk(True) == 0x0810
+    assert isa.enc_bgclk(False, reset=True, t=3) == 0x0823
+    assert isa.enc_dly(5) == 0xA005 and isa.enc_dly(5, ticks=True) == 0xA805
+    assert isa.pin_index("bgclk") == 15
+
+
+def test_directives_pattern_and_bgclk():
+    img = assemble(""".tick_hz 1000000
+.pattern 0x0f 0x05
+.bgclk pin=tout2 hz=125000 auto idle=1
+nop
+""")
+    c = img.config
+    assert (c.pat_mask, c.pat_val) == (0x0F, 0x05)
+    assert (c.bg_pin, c.bg_en, c.bg_auto, c.bg_idle, c.bg_div) == (10, True, True, 1, 3)
+    assert abs(c.bgclk_hz() - 125000) < 1
+    assert img.cfg[18] == 0x7A and img.cfg[19] == 3
+    assert isa.Config.from_bytes(img.cfg).to_bytes() == img.cfg
